@@ -1,13 +1,13 @@
 import cv2
 import numpy as np
 
-from test import smooth_and_sharpen_skin
+from test import retouch
 
 
 def segment_face(hsv_image, face_landmarks, within_sd=2):
     landmarks = np.array(face_landmarks, dtype=np.int32)
     hull = cv2.convexHull(landmarks)
-
+    # print('hull',hull)
     mask = np.zeros(hsv_image.shape[:2], dtype=np.uint8)
     cv2.fillConvexPoly(mask, hull, 255)
     h_channel = hsv_image[:, :, 0]  # Hue
@@ -78,13 +78,15 @@ def apply_bilateral_filter(image,
     sigma_color = int(sigma_color_base * MOPI)
     sigma_space = int(sigma_space_base * MOPI)
 
-    filtered_full = cv2.bilateralFilter(
-        src=image,
-        d=d,
-        sigmaColor=sigma_color,
-        sigmaSpace=sigma_space,
-        borderType=cv2.BORDER_DEFAULT
-    )
+    # filtered_full = cv2.bilateralFilter(
+    #     src=image,
+    #     d=d,
+    #     sigmaColor=sigma_color,
+    #     sigmaSpace=sigma_space,
+    #     borderType=cv2.BORDER_DEFAULT
+    # )
+
+    filtered_full = retouch(image,MOPI)
 
     mask_f = face_mask_uint8.astype(np.float32) / 255.0
     mask_f = mask_f[..., np.newaxis]
@@ -99,10 +101,13 @@ def create_robust_skin_mask(hsv_image, lower_hsv, upper_hsv,
                             close_kernel=(25, 25), fill_holes=True):
     mask = cv2.inRange(hsv_image, lower_hsv, upper_hsv)
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, close_kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
+    # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, close_kernel)
+    # mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    # mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    # cv2.imshow('mask', mask)
+    mask = cv2.erode(mask, (5,5), iterations=1)
+    # cv2.imshow('erode mask', mask)
+    # cv2.waitKey(0)
     if fill_holes:
         num_labels, labels = cv2.connectedComponents(mask)
         if num_labels > 1:
@@ -112,9 +117,8 @@ def create_robust_skin_mask(hsv_image, lower_hsv, upper_hsv,
                 mask = np.uint8(labels == largest_label) * 255
 
     mask_f = mask.astype(np.float32) / 255.0
-    feathered = cv2.GaussianBlur(mask_f, (51, 51), 15)
+    feathered = cv2.GaussianBlur(mask_f, (11, 11), 0)
     feathered = np.clip(feathered, 0, 1)
-    # cv2.imshow("mask", mask)
     # cv2.imshow("feathered", feathered)
     # cv2.waitKey(0)
     return feathered ,mask

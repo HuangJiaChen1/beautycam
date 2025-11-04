@@ -41,6 +41,7 @@ def warp_triangle(src, dst, t_src, t_dst):
 
 def warp_image_piecewise_affine(src_img, src_pts, dst_pts, triangles=None, strength=1.0):
     h, w = src_img.shape[:2]
+
     src_pts = np.asarray(src_pts, dtype=np.float32)
     dst_pts = np.asarray(dst_pts, dtype=np.float32)
     blended_dst = (1.0 - strength)*src_pts + strength*dst_pts
@@ -69,13 +70,25 @@ def warp_image_piecewise_affine(src_img, src_pts, dst_pts, triangles=None, stren
 
     return out
 
+def project_to_2d(point_3d):
+    x, y, z = point_3d
+    if z != 0:
+        return (x / z, y / z)
+    return (x, y)
+
 def warp_with_triangulation(image, source_points, scaled_points):
     H, W = image.shape[:2]
     border_pts = np.array(
         [[0, 0], [W - 1, 0], [W - 1, H - 1], [0, H - 1], [W // 2, 0], [W - 1, H // 2], [W // 2, H - 1], [0, H // 2]],
         np.float32)
-    src_all = np.vstack([source_points, border_pts])
-    dst_all = np.vstack([scaled_points, border_pts])
+    s_list = []
+    d_list = []
+    for k,v in source_points.items():
+        s_list.append(project_to_2d(v))
+    for k,v in scaled_points.items():
+        d_list.append(project_to_2d(v))
+    src_all = np.vstack([s_list, border_pts])
+    dst_all = np.vstack([d_list, border_pts])
     # print(src_all.shape)
     # print(dst_all.shape)
     warped_eye = warp_image_piecewise_affine(image, src_all, dst_all)

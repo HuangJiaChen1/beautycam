@@ -4,32 +4,75 @@ import numpy as np
 import tkinter as tk
 from tkinter import filedialog
 from PIL import Image, ImageTk
-from sympy.polys.numberfields.galois_resolvents import s_vars
 
 from affine_transformation import warp_with_triangulation
+from anti_faling import nasolabial_folds_filter
+from anti_black import black_filter
 from bg import bg_blur
 from dayan import dayan
+from dazui import dazui
+from forehead import forehead
+from long_nose import longnose
 from meibai import segment_face, apply_whitening_and_blend
+from renzhong import renzhong
 from shoulian import shoulian
-from test import smooth_and_sharpen_skin
-from test_speed import enhance_face_detail
+from quangu import quangu
+from zhailian import zhailian
+from biyi import biyi
+from res import enhance_face_detail
+from white_eye import white_eyes
+from white_teeth import white_teeth
+from lipstick import lipstick as apply_lipstick
+from blush import apply_blush
+from zuijiao import zuijiao
 
 mp_face_mesh = mp.solutions.face_mesh
-
+EYE_INDICES = [374, 380, 390, 373, 249, 385, 384, 263, 466, 387, 386, 381, 382, 398, 388, 362, 154, 155, 33, 7, 246, 161, 159, 158, 144, 145, 173, 133, 157, 163, 153, 160]
+# BOUNDARY = [9,70,111,122,351,293,340]
+# 355,358,327,289,392,309,459,458,250,290 鼻子边缘，如需要从4开始粘贴
+BOUNDARY = [270, 409, 317, 402, 81, 82, 91, 181, 37, 0, 84, 17, 269, 321, 375, 318, 324, 312, 311, 415, 308, 314, 61,
+            146, 78, 95, 267, 13, 405, 178, 87, 185, 14, 88, 40, 291, 191, 310, 39, 80,4,334, 296, 276, 283, 293, 295, 285,
+            336, 282, 300,46, 53, 66, 107, 52, 65, 63, 105, 70, 55, 374, 380, 390, 373, 249, 385, 384, 263, 466, 387,
+            386, 381, 382, 398, 388, 362, 154, 155, 33, 7, 246, 161, 159, 158, 144, 145, 173, 133, 157, 163, 153, 160,
+            132,58,172, 136, 150, 149, 176, 148,361,288,397, 365, 379, 378, 400,377,152,473,468,116,123,345,352,103,67,
+            109,10,338,297,332,126,129,98,75,166,79,239,238,20,60,355,358,327,289,392,309,459,458,250,290,97,2,327,326,
+            48,115,220,45,275,440,344,278,280,50]
+#BOUNDARY = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,172, 58, 132, 93,234, 127, 162, 21, 54, 103, 67, 109, 10]
 DAYAN_DEFAULT = 1
 SHOULIAN_DEFAULT = 1
+QUANGU_DEFAULT = 1
+ZHAILIAN_DEFAULT = 1
+RENZHONG_DEFAILT = 0
+BIYI_DEFAULT = 1
+FOREHEAD_DEFAULT = 0
 H_DEFAULT = 0
 S_DEFAULT = 0
 V_DEFAULT = 0
 MOPI_DEFAULT = 0
+FALING_DEFAULT = 0
+BLACK_DEFAULT = 0
+WHITE_EYE_DEFAULT = 1
+WHITE_TEETH_DEFAULT = 1
+LIPSTICK_DEFAULT = 0.0
+BLUSH_DEFAULT = 0.0
+LONGNOSE_DEFAULT = 0.0
+ZUIJIAO_DEFAULT = 0.0
+DAZUI_DEFAULT = 1
 bg_blur_enabled = False
 
 def get_points_all(image, landmarks):
+    points = [(landmarks[i].x, landmarks[i].y, landmarks[i].z+1) for i in range(len(landmarks))]
+    points_pixels = [transform_to_3d(int(p[0] * image.shape[1]), int(p[1] * image.shape[0]), p[2]) for p in points]
+    return points_pixels
+def transform_to_3d(x, y, z):
+    return (x * z, y * z, z)
+def get_points_2D(image, landmarks):
     points = [(landmarks[i].x, landmarks[i].y) for i in range(len(landmarks))]
     points_pixels = [(int(p[0] * image.shape[1]), int(p[1] * image.shape[0])) for p in points]
     return points_pixels
 
-def process_image(image, DAYAN, SHOULIAN, H, S, V, MOPI, DETAIL,apply_bg_blur=False):
+def process_image(image, DAYAN, SHOULIAN, QUANGU, BIYI, LONGNOSE, RENZHONG, ZHAILIAN, FOREHEAD,ZUIJIAO, DAZUI,
+                  H, S, V, MOPI, DETAIL, FALING, BLACK, WHITE_EYE, WHITE_TEETH, LIPSTICK, BLUSH, apply_bg_blur=False):
     if image is None:
         print("Error: Input image is None.")
         return None
@@ -47,15 +90,31 @@ def process_image(image, DAYAN, SHOULIAN, H, S, V, MOPI, DETAIL,apply_bg_blur=Fa
             print("No face landmarks detected.")
             return image
 
-        src_points = []
-        dst_points = []
-
         for face_landmarks in results.multi_face_landmarks:
             all_point = get_points_all(image, face_landmarks.landmark)
-            lower_hsv, upper_hsv = segment_face(cv2.cvtColor(image, cv2.COLOR_BGR2HSV), all_point)
-            dayan(image, face_landmarks, DAYAN, src_points, dst_points)
-            shoulian(image, face_landmarks, SHOULIAN, src_points, dst_points)
+            all_2d = get_points_2D(image, face_landmarks.landmark)
+            dst_points = {}
+            src_points = {}
+            lower_hsv, upper_hsv = segment_face(cv2.cvtColor(image, cv2.COLOR_BGR2HSV), all_2d)
+            for pts in BOUNDARY:
+                pt = all_point[pts]
+                src_points[pts] = pt
+                dst_points[pts] = pt
+            # print(dst_points)
+            dayan(DAYAN, dst_points)
+            shoulian(SHOULIAN, dst_points)
+            quangu(QUANGU, dst_points)
+            biyi(BIYI, dst_points)
+            longnose(LONGNOSE, dst_points)
+            zhailian(ZHAILIAN, dst_points)
+            renzhong(RENZHONG, dst_points)
+            forehead(FOREHEAD, dst_points)
+            zuijiao(ZUIJIAO, dst_points)
+            dazui(DAZUI, dst_points)
             processed_image = warp_with_triangulation(image, src_points, dst_points)
+            # print(dst_points)
+
+
             if processed_image is None:
                 print("Error: Warp with triangulation failed.")
                 return image
@@ -65,9 +124,18 @@ def process_image(image, DAYAN, SHOULIAN, H, S, V, MOPI, DETAIL,apply_bg_blur=Fa
                 cv2.cvtColor(processed_image, cv2.COLOR_BGR2HSV),
                 lower_hsv,
                 upper_hsv,
-                H, S, V, MOPI
+                H, S, V, MOPI,
+
             )
             processed_image = enhance_face_detail(processed_image, strength_pct=DETAIL)
+            processed_image = nasolabial_folds_filter(processed_image, FALING)
+            processed_image = black_filter(processed_image, BLACK)
+            processed_image = white_eyes(processed_image, WHITE_EYE)
+            processed_image = white_teeth(processed_image, WHITE_TEETH)
+            # Apply lipstick effect using concave lip mask
+            processed_image = apply_lipstick(processed_image, LIPSTICK)
+            # Apply blush effect on cheeks
+            processed_image = apply_blush(processed_image, BLUSH)
             if apply_bg_blur:
                 processed_image = bg_blur(processed_image)
 
@@ -80,20 +148,42 @@ def update_image():
     if image is None:
         error_label.config(text=f"Error: Could not load image at {image_path}")
         return
+
+
+    h, w = image.shape[:2]
+    # print(h,w)
+    # image = cv2.resize(image, (int(w*0.8), int(h*0.8)))
+    if w >= 1920 or h >= 1080:
+        image = cv2.resize(image, (w//2, h//2), interpolation=cv2.INTER_AREA)
     processed_image = process_image(
         image,
         DAYAN_var.get(),
         SHOULIAN_var.get(),
+        QUANGU_var.get(),
+        BIYI_var.get(),
+        LONGNOSE_var.get(),
+        RENZHONG_var.get(),
+        ZHAILIAN_var.get(),
+        FOREHEAD_var.get(),
+        ZUIJIAO_var.get(),
+        DAZUI_var.get(),
         H_DEFAULT,
         S_var.get(),
         V_var.get(),
         MOPI_var.get(),
         DETAIL_var.get(),
+        FALING_var.get(),
+        BLACK_var.get(),
+        WHITE_EYE_var.get(),
+        WHITE_TEETH_var.get(),
+        LIPSTICK_var.get(),
+        BLUSH_var.get(),
         apply_bg_blur=bg_blur_enabled
     )
     if processed_image is None:
         error_label.config(text="Error: Image processing failed.")
         return
+
 
     display_image = processed_image.copy()
     # max_size = (500, 500)
@@ -141,10 +231,22 @@ def save_image():
         image,
         DAYAN_var.get(),
         SHOULIAN_var.get(),
+        QUANGU_var.get(),
+        BIYI_var.get(),
+        RENZHONG_var.get(),
+        ZHAILIAN_var.get(),
+        FOREHEAD_var.get(),
         H_DEFAULT,
         S_var.get(),
         V_var.get(),
         MOPI_var.get(),
+        DETAIL_var.get(),
+        FALING_var.get(),
+        BLACK_var.get(),
+        WHITE_EYE_var.get(),
+        WHITE_TEETH_var.get(),
+        LIPSTICK_var.get(),
+        BLUSH_var.get(),
         apply_bg_blur=bg_blur_enabled
     )
     if processed_image is None:
@@ -159,10 +261,11 @@ def save_image():
     error_label.config(text=f"Image saved as {filename}")
 
 
-root = tk.Tk()
-root.title("美颜相机 + 模糊背景")
 
-image_path = 'mopi.jpg'
+root = tk.Tk()
+root.title("美颜算法")
+
+image_path = 'imgs/face4.jpg'
 image_frame = tk.Frame(root)
 image_frame.pack(side=tk.LEFT, padx=10, pady=10)
 image_label = tk.Label(image_frame)
@@ -172,47 +275,119 @@ error_label.pack()
 
 control_frame = tk.Frame(root)
 control_frame.pack(side=tk.RIGHT, padx=10, pady=10)
+control_frame.grid_columnconfigure(0, weight=1)
+control_frame.grid_columnconfigure(1, weight=1)
+control_frame.grid_columnconfigure(2, weight=1)
 
 DAYAN_var = tk.DoubleVar(value=DAYAN_DEFAULT)
 SHOULIAN_var = tk.DoubleVar(value=SHOULIAN_DEFAULT)
+ZHAILIAN_var = tk.DoubleVar(value=ZHAILIAN_DEFAULT)
+FOREHEAD_var = tk.DoubleVar(value=FOREHEAD_DEFAULT)
+RENZHONG_var = tk.DoubleVar(value=RENZHONG_DEFAILT)
+QUANGU_var = tk.DoubleVar(value=QUANGU_DEFAULT)
+BIYI_var = tk.DoubleVar(value=BIYI_DEFAULT)
+LONGNOSE_var = tk.DoubleVar(value=LONGNOSE_DEFAULT)
 DETAIL_var = tk.DoubleVar(value=0)
 # H_var = tk.DoubleVar(value=H_DEFAULT)
 S_var = tk.DoubleVar(value=S_DEFAULT)
 V_var = tk.DoubleVar(value=V_DEFAULT)
 MOPI_var = tk.DoubleVar(value=MOPI_DEFAULT)
+FALING_var = tk.DoubleVar(value=FALING_DEFAULT)
+BLACK_var = tk.DoubleVar(value=BLACK_DEFAULT)
+WHITE_EYE_var = tk.DoubleVar(value=WHITE_EYE_DEFAULT)
+WHITE_TEETH_var = tk.DoubleVar(value=WHITE_TEETH_DEFAULT)
+LIPSTICK_var = tk.DoubleVar(value=LIPSTICK_DEFAULT)
+BLUSH_var = tk.DoubleVar(value=BLUSH_DEFAULT)
+ZUIJIAO_var = tk.DoubleVar(value=ZUIJIAO_DEFAULT)
+DAZUI_var = tk.DoubleVar(value=DAZUI_DEFAULT)
 
-tk.Scale(control_frame, from_=1.0, to=1.2, resolution=0.01, orient=tk.HORIZONTAL, label="大眼", variable=DAYAN_var,
-         command=lambda x: update_image()).pack(padx=5, pady=5)
-tk.Scale(control_frame, from_=0.85, to=1.0, resolution=0.01, orient=tk.HORIZONTAL, label="瘦脸", variable=SHOULIAN_var,
-         command=lambda x: update_image()).pack(padx=5, pady=5)
+
+tk.Scale(control_frame, from_=1.0, to=1.1, resolution=0.01, orient=tk.HORIZONTAL, label="大眼", variable=DAYAN_var,
+         command=lambda x: update_image()).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame, from_=0.92, to=1.0, resolution=0.005, orient=tk.HORIZONTAL, label="瘦脸", variable=SHOULIAN_var,
+         command=lambda x: update_image()).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame, from_=0.95, to=1.0, resolution=0.005, orient=tk.HORIZONTAL, label="颧骨", variable=QUANGU_var,
+         command=lambda x: update_image()).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame, from_=-3.0, to=3.0, resolution=0.005, orient=tk.HORIZONTAL, label="人中", variable=RENZHONG_var,
+         command=lambda x: update_image()).grid(row=1, column=2, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame, from_=-3.0, to=3.0, resolution=0.005, orient=tk.HORIZONTAL, label="额头", variable=FOREHEAD_var,
+         command=lambda x: update_image()).grid(row=2, column=2, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame, from_=0.9, to=1.0, resolution=0.005, orient=tk.HORIZONTAL, label="窄脸", variable=ZHAILIAN_var,
+         command=lambda x: update_image()).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame, from_=0.9, to=1.1, resolution=0.005, orient=tk.HORIZONTAL, label="鼻翼", variable=BIYI_var,
+         command=lambda x: update_image()).grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame, from_=-2.0, to=2.0, resolution=0.005, orient=tk.HORIZONTAL, label="长鼻", variable=LONGNOSE_var,
+         command=lambda x: update_image()).grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame, from_=-2.0, to=2.0, resolution=0.005, orient=tk.HORIZONTAL, label="嘴角", variable=ZUIJIAO_var,
+         command=lambda x: update_image()).grid(row=2, column=0, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame, from_=0.9, to=1.1, resolution=0.005, orient=tk.HORIZONTAL, label="大嘴", variable=DAZUI_var,
+         command=lambda x: update_image()).grid(row=3, column=2, padx=5, pady=5, sticky="ew")
 # tk.Scale(control_frame, from_=0.0, to=1.0, resolution=0.05, orient=tk.HORIZONTAL, label="H", variable=H_var,
 #          command=lambda x: update_image()).pack(padx=5, pady=5)
-text = tk.StringVar(value="调整S，V来调整美白和冷暖\nS不宜超过0.20，V不宜超过0.10")
-tk.Label(control_frame, textvariable=text, font=("Arial", 9)).pack(padx=5)
+# text = tk.StringVar(value="调整S，V来调整美白和冷暖\nS不宜超过0.20，V不宜超过0.10")
+# tk.Label(control_frame, textvariable=text, font=("Arial", 9)).grid(row=2, column=0, columnspan=2, padx=5, sticky="w")
 tk.Scale(control_frame, from_=0.0, to=0.4, resolution=0.01, orient=tk.HORIZONTAL, label="S", variable=S_var,
-         command=lambda x: update_image()).pack(padx=5, pady=5)
+         command=lambda x: update_image()).grid(row=3, column=0, padx=5, pady=5, sticky="ew")
 tk.Scale(control_frame, from_=0.0, to=0.2, resolution=0.01, orient=tk.HORIZONTAL, label="V", variable=V_var,
-         command=lambda x: update_image()).pack(padx=5, pady=5)
-text = tk.StringVar(value="根据美图秀秀，其磨皮拉满约等于这\n里数值0.30，因此不宜超过0.30")
-tk.Label(control_frame, textvariable=text, font=("Arial", 9)).pack(padx=5)
-tk.Scale(control_frame, from_=0, to=0.6, resolution=0.01, orient=tk.HORIZONTAL, label="磨皮", variable=MOPI_var,
-         command=lambda x: update_image()).pack(padx=5, pady=5)
+         command=lambda x: update_image()).grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+# text = tk.StringVar(value="根据美图秀秀，其磨皮拉满约等于这\n里数值0.30，因此不宜超过0.30")
+# tk.Label(control_frame, textvariable=text, font=("Arial", 9)).grid(row=4, column=0, columnspan=2, padx=5, sticky="w")
+tk.Scale(control_frame, from_=0, to=0.5, resolution=0.01, orient=tk.HORIZONTAL, label="磨皮", variable=MOPI_var,
+         command=lambda x: update_image()).grid(row=5, column=0, padx=5, pady=5, sticky="ew")
 tk.Scale(control_frame,
-         from_=0, to=100, resolution=1,
+         from_=0, to=50, resolution=1,
          orient=tk.HORIZONTAL,
          label="细节增强",
          variable=DETAIL_var,
-         command=lambda x: update_image()).pack(padx=5, pady=5)
+         command=lambda x: update_image()).grid(row=5, column=1, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame,
+         from_=0, to=1, resolution=0.02,
+         orient=tk.HORIZONTAL,
+         label="去法令纹",
+         variable=FALING_var,
+         command=lambda x: update_image()).grid(row=6, column=0, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame,
+         from_=0, to=1, resolution=0.02,
+         orient=tk.HORIZONTAL,
+         label="去黑眼圈",
+         variable=BLACK_var,
+         command=lambda x: update_image()).grid(row=6, column=1, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame,
+         from_=1, to=1.5, resolution=0.02,
+         orient=tk.HORIZONTAL,
+         label="亮眼",
+         variable=WHITE_EYE_var,
+         command=lambda x: update_image()).grid(row=7, column=0, padx=5, pady=5, sticky="ew")
+tk.Scale(control_frame,
+         from_=1, to=1.2, resolution=0.01,
+         orient=tk.HORIZONTAL,
+         label="亮牙",
+         variable=WHITE_TEETH_var,
+         command=lambda x: update_image()).grid(row=7, column=1, padx=5, pady=5, sticky="ew")
+
+tk.Scale(control_frame,
+         from_=0.0, to=1.0, resolution=0.01,
+         orient=tk.HORIZONTAL,
+         label="口红",
+         variable=LIPSTICK_var,
+         command=lambda x: update_image()).grid(row=8, column=0, padx=5, pady=5, sticky="ew")
+
+tk.Scale(control_frame,
+         from_=0.0, to=0.15, resolution=0.01,
+         orient=tk.HORIZONTAL,
+         label="腮红",
+         variable=BLUSH_var,
+         command=lambda x: update_image()).grid(row=8, column=1, padx=5, pady=5, sticky="ew")
 
 open_button = tk.Button(control_frame, text="打开图片", command=open_image)
-open_button.pack(pady=5)
+open_button.grid(row=9, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
 
 blur_button = tk.Button(control_frame, text="模糊背景", command=toggle_bg_blur, bg="#4CAF50", fg="white",
                         font=("Arial", 10, "bold"))
-blur_button.pack(pady=5, fill=tk.X)
+blur_button.grid(row=10, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
 
 save_button = tk.Button(control_frame, text="保存图片", command=save_image)
-save_button.pack(pady=5)
+save_button.grid(row=11, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
 
 update_image()
 root.mainloop()

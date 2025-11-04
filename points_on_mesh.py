@@ -6,7 +6,7 @@ mp_drawing_styles = mp.solutions.drawing_styles
 mp_face_mesh = mp.solutions.face_mesh
 
 # For static images:
-IMAGE_FILES = ['mopi.jpg']
+IMAGE_FILES = ['face_up.jpg']
 drawing_spec = mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
 
 with mp_face_mesh.FaceMesh(
@@ -16,8 +16,9 @@ with mp_face_mesh.FaceMesh(
         min_detection_confidence=0.5) as face_mesh:
     for idx, file in enumerate(IMAGE_FILES):
         image = cv2.imread(file)
+        image = cv2.resize(image, (8000, 8000), interpolation=cv2.INTER_LANCZOS4)
         # Convert the BGR image to RGB before processing.
-        # image = cv2.flip(image, 1)
+        image = cv2.flip(image, 1)
         results = face_mesh.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
 
         # Print and draw face mesh landmarks on the image.
@@ -69,4 +70,4 @@ with mp_face_mesh.FaceMesh(
         cv2.waitKey(0)
 
         # Optionally save the annotated image
-        cv2.imwrite('points.jpg', annotated_image)
+        cv2.imwrite('points_flipped.jpg', annotated_image)
