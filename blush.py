@@ -7,7 +7,6 @@ RIGHT_CHEEK = [47, 206, 58, 127]
 C_LEFT = 280
 C_RIGHT = 50
 
-
 def compute_cheek_masks(
     image,
     landmarks,
@@ -17,21 +16,8 @@ def compute_cheek_masks(
     indices_right=None,
     indices_left=None,
 ):
-    """
-    Compute Gaussian masks for left and right cheeks based on MediaPipe landmarks.
-
-    Args:
-        image (np.ndarray): Input image (for shape).
-        landmarks (list): List of 468 MediaPipe landmark objects.
-        box_ratio (list): Ratios for box size [right, left].
-        kernel_ratio (list of lists): Sigma ratios [[sig_x_right, sig_y_right], [sig_x_left, sig_y_left]].
-        mask_thresh (float): Threshold for normalized kernel.
-
-    Returns:
-        list: [right_mask, left_mask] as np.float32 arrays.
-    """
     h, w, _ = image.shape
-    points = np.array([(int(lm.x * w), int(lm.y * h)) for lm in landmarks])
+    points = np.array(landmarks)
 
     def sort_quad(pts):
         # Sort to top-left, top-right, bottom-right, bottom-left
@@ -114,43 +100,19 @@ def compute_cheek_masks(
     return masks  # [right, left]
 
 
-def apply_blush(image, strength=0.0, color=(255, 20, 20), indices_right=RIGHT_CHEEK, indices_left=LEFT_CHEEK):
-    """
-    Apply a blush effect to cheeks using MediaPipe landmarks and Gaussian masks.
+def apply_blush(image,landmarks, strength=0.0, color=(255, 20, 20), indices_right=RIGHT_CHEEK, indices_left=LEFT_CHEEK):
 
-    Args:
-        image (np.ndarray): Input BGR image.
-        strength (float): Blush intensity multiplier (recommended 0.0–0.3). 0 disables.
-        color (tuple): BGR color for blush, e.g. (255,20,20).
-        indices_right (list): Landmark indices for the right cheek polygon.
-        indices_left (list): Landmark indices for the left cheek polygon.
-
-    Returns:
-        np.ndarray: Image with blush applied.
-    """
     if image is None:
         return None
 
     if strength <= 0:
         return image.copy()
 
-    # Detect landmarks
-    with mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=True,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.5,
-    ) as face_mesh:
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        res = face_mesh.process(rgb)
-        if not res.multi_face_landmarks:
-            return image.copy()
-        lm = res.multi_face_landmarks[0].landmark
 
     # Compute cheek masks and combine
     right_mask, left_mask = compute_cheek_masks(
         image,
-        lm,
+        landmarks,
         indices_right=indices_right,
         indices_left=indices_left,
     )

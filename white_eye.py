@@ -5,22 +5,13 @@ import numpy as np
 RIGHT_EYE_RING = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
 LEFT_EYE_RING = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]
 
-def white_eyes(image, strength):
+def white_eyes(image, landmarks, strength):
 
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(
-        static_image_mode=True, max_num_faces=1, refine_landmarks=False
-    )
-    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb)
-    if not results.multi_face_landmarks:
-        face_mesh.close()
 
-    lm = results.multi_face_landmarks[0].landmark
     h, w, _ = image.shape
 
-    right_pts = np.array([(int(lm[i].x * w), int(lm[i].y * h)) for i in RIGHT_EYE_RING], np.int32)
-    left_pts = np.array([(int(lm[i].x * w), int(lm[i].y * h)) for i in LEFT_EYE_RING], np.int32)
+    right_pts = np.array([landmarks[i] for i in RIGHT_EYE_RING], np.int32)
+    left_pts = np.array([landmarks[i] for i in LEFT_EYE_RING], np.int32)
     right_pts = cv2.convexHull(right_pts)
     left_pts = cv2.convexHull(left_pts)
     mask = np.zeros((h, w), dtype=np.uint8)

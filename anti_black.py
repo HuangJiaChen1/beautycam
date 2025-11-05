@@ -1,30 +1,18 @@
 import cv2
-import mediapipe as mp
 import numpy as np
 
 
-def black_filter(image, strength=1.0):
+def black_filter(image, landmarks, strength=1.0):
     if strength <= 0:
         return image.copy()
 
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(
-        static_image_mode=True, max_num_faces=1, refine_landmarks=False
-    )
-    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb)
-    if not results.multi_face_landmarks:
-        face_mesh.close()
-        return image.copy()
-
-    lm = results.multi_face_landmarks[0].landmark
     h, w, _ = image.shape
 
     left_idx = [341, 256, 252, 253, 261, 350, 330, 346]
     right_idx = [112, 26, 22, 23, 31, 121, 101, 117]
 
-    left_pts = np.array([(int(lm[i].x * w), int(lm[i].y * h)) for i in left_idx], np.int32)
-    right_pts = np.array([(int(lm[i].x * w), int(lm[i].y * h)) for i in right_idx], np.int32)
+    left_pts = np.array([landmarks[i] for i in left_idx], np.int32)
+    right_pts = np.array([landmarks[i] for i in right_idx], np.int32)
 
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillPoly(mask, [left_pts, right_pts], 255)

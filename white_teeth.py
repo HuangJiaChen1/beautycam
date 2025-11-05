@@ -4,21 +4,11 @@ import numpy as np
 
 TEETH_INDICES = [78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,178,88,95]
 
-def white_teeth(image, strength):
-    mp_drawing = mp.solutions.drawing_utils
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(
-        static_image_mode=True, max_num_faces=1, refine_landmarks=False
-    )
-    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb)
-    if not results.multi_face_landmarks:
-        face_mesh.close()
+def white_teeth(image, landmarks, strength):
 
-    lm = results.multi_face_landmarks[0].landmark
     h, w, _ = image.shape
 
-    teeth_pts = np.array([(int(lm[i].x * w), int(lm[i].y * h)) for i in TEETH_INDICES], np.int32)
+    teeth_pts = np.array([landmarks[i] for i in TEETH_INDICES], np.int32)
     # right_pts = cv2.convexHull(right_pts)
     # left_pts = cv2.convexHull(left_pts)
     mask = np.zeros((h, w), dtype=np.uint8)

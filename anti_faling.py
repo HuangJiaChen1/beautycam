@@ -3,28 +3,19 @@ import mediapipe as mp
 import numpy as np
 
 
-def nasolabial_folds_filter(image, strength):
+def nasolabial_folds_filter(image, landmarks, strength):
 
     if strength <= 0:
         return image
 
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=False)
 
-    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb_image)
-
-    if not results.multi_face_landmarks:
-        return image
-
-    landmark_points = results.multi_face_landmarks[0].landmark
     h, w, _ = image.shape
 
     left_indices = [36, 165, 92, 186,57,207]
     right_indices = [391,432,411,266]
 
-    left_coords = [(int(landmark_points[i].x * w), int(landmark_points[i].y * h)) for i in left_indices]
-    right_coords = [(int(landmark_points[i].x * w), int(landmark_points[i].y * h)) for i in right_indices]
+    left_coords = [landmarks[i] for i in left_indices]
+    right_coords = [landmarks[i] for i in right_indices]
 
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillPoly(mask, [np.array(left_coords)], 255)

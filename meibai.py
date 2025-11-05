@@ -2,14 +2,37 @@ import cv2
 import numpy as np
 
 from test import retouch
-
+RIGHT_EYE_RING = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+LEFT_EYE_RING = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]
+LIPS_INDICES = [61,185,40, 39, 37, 0, 267, 269,270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146]
 
 def segment_face(hsv_image, face_landmarks, within_sd=2):
+    h, w, _ = hsv_image.shape
+    right_pts = np.array([face_landmarks[i] for i in RIGHT_EYE_RING], np.int32)
+    left_pts = np.array([face_landmarks[i] for i in LEFT_EYE_RING], np.int32)
+    right_pts = cv2.convexHull(right_pts)
+    left_pts = cv2.convexHull(left_pts)
+    eye_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillConvexPoly(eye_mask, np.array(left_pts), 255)
+    cv2.fillConvexPoly(eye_mask, np.array(right_pts), 255)
+    # cv2.imshow('eye_mask', eye_mask)
+
+    lips_pts = np.array([face_landmarks[i] for i in LIPS_INDICES], np.int32)
+    cv2.fillPoly(eye_mask, [lips_pts], 255)
+    # cv2.imshow('eyelips', eye_mask)
+    # cv2.waitKey(0)
+
     landmarks = np.array(face_landmarks, dtype=np.int32)
     hull = cv2.convexHull(landmarks)
     # print('hull',hull)
-    mask = np.zeros(hsv_image.shape[:2], dtype=np.uint8)
-    cv2.fillConvexPoly(mask, hull, 255)
+    face_mask = np.zeros(hsv_image.shape[:2], dtype=np.uint8)
+    cv2.fillConvexPoly(face_mask, hull, 255)
+
+    mask = cv2.bitwise_and(face_mask, cv2.bitwise_not(eye_mask))
+    # cv2.imshow('mask', mask)
+    # cv2.waitKey(0)
+
+
     h_channel = hsv_image[:, :, 0]  # Hue
     s_channel = hsv_image[:, :, 1]  # Saturation
     v_channel = hsv_image[:, :, 2]  # Value
@@ -40,7 +63,7 @@ def segment_face(hsv_image, face_landmarks, within_sd=2):
                           s_range[1] if s_range[1] <= 255 else 255,
                           v_range[1] if v_range[1] <= 255 else 255])
 
-    return lower_hsv, upper_hsv
+    return lower_hsv, upper_hsv, eye_mask
 
 
 def meibai(hsv_image, mask,H,S,V, factor_max=3.0, decrease_s_factor_min=0):
@@ -96,11 +119,10 @@ def apply_bilateral_filter(image,
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
-
-def create_robust_skin_mask(hsv_image, lower_hsv, upper_hsv,
-                            close_kernel=(25, 25), fill_holes=True):
+def create_robust_skin_mask(hsv_image, lower_hsv, upper_hsv,eye_mask,
+                            close_kernel=(25, 25), fill_holes=False):
     mask = cv2.inRange(hsv_image, lower_hsv, upper_hsv)
-
+    mask = cv2.bitwise_and(mask, cv2.bitwise_not(eye_mask))
     # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, close_kernel)
     # mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     # mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -108,20 +130,21 @@ def create_robust_skin_mask(hsv_image, lower_hsv, upper_hsv,
     mask = cv2.erode(mask, (5,5), iterations=1)
     # cv2.imshow('erode mask', mask)
     # cv2.waitKey(0)
-    if fill_holes:
-        num_labels, labels = cv2.connectedComponents(mask)
-        if num_labels > 1:
-            sizes = [(np.sum(labels == i), i) for i in range(1, num_labels)]
-            if sizes:
-                largest_label = max(sizes, key=lambda x: x[0])[1]
-                mask = np.uint8(labels == largest_label) * 255
+
+    # if fill_holes:
+    #     num_labels, labels = cv2.connectedComponents(mask)
+    #     if num_labels > 1:
+    #         sizes = [(np.sum(labels == i), i) for i in range(1, num_labels)]
+    #         if sizes:
+    #             largest_label = max(sizes, key=lambda x: x[0])[1]
+    #             mask = np.uint8(labels == largest_label) * 255
 
     mask_f = mask.astype(np.float32) / 255.0
     feathered = cv2.GaussianBlur(mask_f, (11, 11), 0)
     feathered = np.clip(feathered, 0, 1)
     # cv2.imshow("feathered", feathered)
     # cv2.waitKey(0)
-    return feathered ,mask
+    return feathered
 def blend_whitened(original_bgr, whitened_bgr, soft_mask):
     alpha = soft_mask[..., np.newaxis]          # (H, W, 1)
 
@@ -131,14 +154,15 @@ def blend_whitened(original_bgr, whitened_bgr, soft_mask):
     blended = orig_f * (1 - alpha) + whit_f * alpha
     return blended.astype(np.uint8)
 def apply_whitening_and_blend(original_image,
+                              face_landmark,
                               hsv_image,
-                              lower_hsv, upper_hsv,
                               H,
                               S,V, MOPI,
                               blur_sigma=12):
 
-    hard_mask, soft_mask = create_robust_skin_mask(
-        hsv_image, lower_hsv, upper_hsv,
+    lower_hsv,upper_hsv,eye_mask = segment_face(hsv_image,face_landmark)
+    hard_mask = create_robust_skin_mask(
+        hsv_image, lower_hsv, upper_hsv, eye_mask,
         close_kernel=(31,31), fill_holes=True
     )
 

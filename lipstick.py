@@ -5,6 +5,7 @@ import mediapipe as mp
 import numpy as np
 '''
 现在问题是会出嘴唇范围，看能不能用像素均值再segment一下
+好像好了
 '''
 def segment_lips(hsv_image, mask, within_sd = 1.8):
     h_channel = hsv_image[:, :, 0]
@@ -36,24 +37,15 @@ def segment_lips(hsv_image, mask, within_sd = 1.8):
     return lower_hsv, upper_hsv
 
 
-def lipstick(image, strength=1.0, color=(255, 20, 20)):
+def lipstick(image,landmarks, strength=1.0, color=(255, 20, 20)):
     if strength <= 0:
         return image.copy()
 
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=False)
-    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb)
 
-    if not results.multi_face_landmarks:
-        face_mesh.close()
-        return image.copy()
-
-    lm = results.multi_face_landmarks[0].landmark
     h, w, _ = image.shape
 
-    lips_pts = np.array([(int(lm[i].x * w), int(lm[i].y * h)) for i in LIPS_INDICES], np.int32)
-    teeth_pts = np.array([(int(lm[i].x * w), int(lm[i].y * h)) for i in TEETH_INDICES], np.int32)
+    lips_pts = np.array([landmarks[i] for i in LIPS_INDICES], np.int32)
+    teeth_pts = np.array([landmarks[i] for i in TEETH_INDICES], np.int32)
 
     lip_mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillPoly(lip_mask, [lips_pts], 255)
@@ -73,7 +65,6 @@ def lipstick(image, strength=1.0, color=(255, 20, 20)):
     lipstick_ycrcb = (ycrcb_mat[0, 0].astype(np.float32) / 255.0)[::-1]
     indices = np.where(mask_normalized > 0)
     if len(indices[0]) == 0:
-        face_mesh.close()
         return image.copy()
 
     weights = mask_normalized[indices]
@@ -90,7 +81,6 @@ def lipstick(image, strength=1.0, color=(255, 20, 20)):
     im_out = cv2.cvtColor(im_ycrcb, cv2.COLOR_YCrCb2BGR) * 255.0
     result = np.clip(im_out, 0, 255).astype(np.uint8)
 
-    face_mesh.close()
     return result
 
 #

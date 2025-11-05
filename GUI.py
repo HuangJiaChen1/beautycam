@@ -13,7 +13,7 @@ from dayan import dayan
 from dazui import dazui
 from forehead import forehead
 from long_nose import longnose
-from meibai import segment_face, apply_whitening_and_blend
+from meibai import apply_whitening_and_blend
 from renzhong import renzhong
 from shoulian import shoulian
 from quangu import quangu
@@ -23,7 +23,7 @@ from res import enhance_face_detail
 from white_eye import white_eyes
 from white_teeth import white_teeth
 from lipstick import lipstick as apply_lipstick
-from blush import apply_blush
+from test_blush import apply_blush
 from zuijiao import zuijiao
 
 mp_face_mesh = mp.solutions.face_mesh
@@ -95,7 +95,6 @@ def process_image(image, DAYAN, SHOULIAN, QUANGU, BIYI, LONGNOSE, RENZHONG, ZHAI
             all_2d = get_points_2D(image, face_landmarks.landmark)
             dst_points = {}
             src_points = {}
-            lower_hsv, upper_hsv = segment_face(cv2.cvtColor(image, cv2.COLOR_BGR2HSV), all_2d)
             for pts in BOUNDARY:
                 pt = all_point[pts]
                 src_points[pts] = pt
@@ -121,21 +120,19 @@ def process_image(image, DAYAN, SHOULIAN, QUANGU, BIYI, LONGNOSE, RENZHONG, ZHAI
 
             processed_image = apply_whitening_and_blend(
                 processed_image,
+                all_2d,
                 cv2.cvtColor(processed_image, cv2.COLOR_BGR2HSV),
-                lower_hsv,
-                upper_hsv,
                 H, S, V, MOPI,
 
             )
             processed_image = enhance_face_detail(processed_image, strength_pct=DETAIL)
-            processed_image = nasolabial_folds_filter(processed_image, FALING)
-            processed_image = black_filter(processed_image, BLACK)
-            processed_image = white_eyes(processed_image, WHITE_EYE)
-            processed_image = white_teeth(processed_image, WHITE_TEETH)
-            # Apply lipstick effect using concave lip mask
-            processed_image = apply_lipstick(processed_image, LIPSTICK)
-            # Apply blush effect on cheeks
-            processed_image = apply_blush(processed_image, BLUSH)
+            processed_image = nasolabial_folds_filter(processed_image,all_2d, FALING)
+            processed_image = black_filter(processed_image,all_2d, BLACK)
+            processed_image = white_eyes(processed_image, all_2d,WHITE_EYE)
+            processed_image = white_teeth(processed_image,all_2d, WHITE_TEETH)
+            processed_image = apply_lipstick(processed_image, all_2d, LIPSTICK)
+            processed_image = apply_blush(processed_image, color=(157, 107, 255), intensity=BLUSH)
+
             if apply_bg_blur:
                 processed_image = bg_blur(processed_image)
 
@@ -310,15 +307,15 @@ tk.Scale(control_frame, from_=0.95, to=1.0, resolution=0.005, orient=tk.HORIZONT
          command=lambda x: update_image()).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
 tk.Scale(control_frame, from_=-3.0, to=3.0, resolution=0.005, orient=tk.HORIZONTAL, label="人中", variable=RENZHONG_var,
          command=lambda x: update_image()).grid(row=1, column=2, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=-3.0, to=3.0, resolution=0.005, orient=tk.HORIZONTAL, label="额头", variable=FOREHEAD_var,
+tk.Scale(control_frame, from_=-5.0, to=5.0, resolution=0.005, orient=tk.HORIZONTAL, label="额头", variable=FOREHEAD_var,
          command=lambda x: update_image()).grid(row=2, column=2, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=0.9, to=1.0, resolution=0.005, orient=tk.HORIZONTAL, label="窄脸", variable=ZHAILIAN_var,
+tk.Scale(control_frame, from_=0.95, to=1.0, resolution=0.005, orient=tk.HORIZONTAL, label="窄脸", variable=ZHAILIAN_var,
          command=lambda x: update_image()).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
 tk.Scale(control_frame, from_=0.9, to=1.1, resolution=0.005, orient=tk.HORIZONTAL, label="鼻翼", variable=BIYI_var,
          command=lambda x: update_image()).grid(row=1, column=1, padx=5, pady=5, sticky="ew")
 tk.Scale(control_frame, from_=-2.0, to=2.0, resolution=0.005, orient=tk.HORIZONTAL, label="长鼻", variable=LONGNOSE_var,
          command=lambda x: update_image()).grid(row=2, column=1, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=-2.0, to=2.0, resolution=0.005, orient=tk.HORIZONTAL, label="嘴角", variable=ZUIJIAO_var,
+tk.Scale(control_frame, from_=0.0, to=3.0, resolution=0.005, orient=tk.HORIZONTAL, label="嘴角", variable=ZUIJIAO_var,
          command=lambda x: update_image()).grid(row=2, column=0, padx=5, pady=5, sticky="ew")
 tk.Scale(control_frame, from_=0.9, to=1.1, resolution=0.005, orient=tk.HORIZONTAL, label="大嘴", variable=DAZUI_var,
          command=lambda x: update_image()).grid(row=3, column=2, padx=5, pady=5, sticky="ew")
@@ -326,9 +323,9 @@ tk.Scale(control_frame, from_=0.9, to=1.1, resolution=0.005, orient=tk.HORIZONTA
 #          command=lambda x: update_image()).pack(padx=5, pady=5)
 # text = tk.StringVar(value="调整S，V来调整美白和冷暖\nS不宜超过0.20，V不宜超过0.10")
 # tk.Label(control_frame, textvariable=text, font=("Arial", 9)).grid(row=2, column=0, columnspan=2, padx=5, sticky="w")
-tk.Scale(control_frame, from_=0.0, to=0.4, resolution=0.01, orient=tk.HORIZONTAL, label="S", variable=S_var,
+tk.Scale(control_frame, from_=0.0, to=0.08, resolution=0.002, orient=tk.HORIZONTAL, label="S", variable=S_var,
          command=lambda x: update_image()).grid(row=3, column=0, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=0.0, to=0.2, resolution=0.01, orient=tk.HORIZONTAL, label="V", variable=V_var,
+tk.Scale(control_frame, from_=0.0, to=0.03, resolution=0.002, orient=tk.HORIZONTAL, label="V", variable=V_var,
          command=lambda x: update_image()).grid(row=3, column=1, padx=5, pady=5, sticky="ew")
 # text = tk.StringVar(value="根据美图秀秀，其磨皮拉满约等于这\n里数值0.30，因此不宜超过0.30")
 # tk.Label(control_frame, textvariable=text, font=("Arial", 9)).grid(row=4, column=0, columnspan=2, padx=5, sticky="w")
@@ -366,14 +363,14 @@ tk.Scale(control_frame,
          command=lambda x: update_image()).grid(row=7, column=1, padx=5, pady=5, sticky="ew")
 
 tk.Scale(control_frame,
-         from_=0.0, to=1.0, resolution=0.01,
+         from_=0.0, to=0.3, resolution=0.01,
          orient=tk.HORIZONTAL,
          label="口红",
          variable=LIPSTICK_var,
          command=lambda x: update_image()).grid(row=8, column=0, padx=5, pady=5, sticky="ew")
 
 tk.Scale(control_frame,
-         from_=0.0, to=0.15, resolution=0.01,
+         from_=0.0, to=1, resolution=0.05,
          orient=tk.HORIZONTAL,
          label="腮红",
          variable=BLUSH_var,

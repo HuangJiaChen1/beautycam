@@ -31,7 +31,7 @@ def calc_slim_points(lcp, rcp, scale_factor):
     new_points_3d_l = shrink_points_towards_midpoint(left_cheek_points, center, scale_factor)
     new_points_3d_r = shrink_points_towards_midpoint(right_cheek_points, center, scale_factor)
     new_points_3d = np.concatenate((new_points_3d_l,new_points_3d_r),axis=0)
-    print(new_points_3d)
+    # print(new_points_3d)
     return new_points_3d.tolist()
 
 def get_points_3D(dst, indices):
