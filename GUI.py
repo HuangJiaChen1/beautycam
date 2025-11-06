@@ -50,6 +50,9 @@ BOUNDARY = [270, 409, 317, 402, 81, 82, 91, 181, 37, 0, 84, 17, 269, 321, 375, 3
             48,115,220,45,275,440,344,278,280,50,389,9,162]
 #BOUNDARY = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323,
 # 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,172, 58, 132, 93,234, 127, 162, 21, 54, 103, 67, 109, 10]
+SHOULIAN_INDICES = [132,58,172, 136, 150, 149, 176, 148,361,288,397, 365, 379, 378, 400,377,152,389,9,162
+                    ,33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246,
+                    263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]
 DAYAN_DEFAULT = 1
 SHOULIAN_DEFAULT = 1
 QUANGU_DEFAULT = 1
@@ -112,9 +115,27 @@ def process_image(image, DAYAN, SHOULIAN, QUANGU, BIYI, LONGNOSE, RENZHONG, ZHAI
                 src_points[pts] = pt
                 dst_points[pts] = pt
             # print(dst_points)
+
+            '''
+            想要瘦脸时对脸部五官也进行收缩，目前我觉得好像只能做两次affine了，
+            把瘦脸单独拎出来，不pass boundaries，做完affine再apply别的变换
+            
+            还有没有可能只做一次affine呢？如果我在瘦脸时把五官landmark也传入
+            的话可行吗？会不会要对各个五官做单独变换？可是即使是这样，瘦脸单独做
+            affine一定是最自然的
+            '''
+            shoulian_dst_pts = {}
+            shoulian_src_pts = {}
+            for pts in SHOULIAN_INDICES:
+                pt = all_point[pts]
+                shoulian_dst_pts[pts] = pt
+                shoulian_src_pts[pts] = pt
+            shoulian(SHOULIAN, shoulian_dst_pts)
+            processed_image = warp_with_triangulation(image,shoulian_src_pts,shoulian_dst_pts)
+            # 以上是做2次affine
+
             dayan(DAYAN, dst_points)
-            shoulian(SHOULIAN, dst_points)
-            quangu(QUANGU, dst_points)
+            quangu(QUANGU*ZHAILIAN, dst_points)
             biyi(BIYI, dst_points)
             longnose(LONGNOSE, dst_points)
             zhailian(ZHAILIAN, dst_points)
@@ -122,7 +143,7 @@ def process_image(image, DAYAN, SHOULIAN, QUANGU, BIYI, LONGNOSE, RENZHONG, ZHAI
             forehead(FOREHEAD, dst_points)
             zuijiao(ZUIJIAO, dst_points)
             dazui(DAZUI, dst_points)
-            processed_image = warp_with_triangulation(image, src_points, dst_points)
+            processed_image = warp_with_triangulation(processed_image, src_points, dst_points)
             # print(dst_points)
 
 
