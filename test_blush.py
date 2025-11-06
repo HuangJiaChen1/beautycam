@@ -9,33 +9,19 @@ left_cheek_indices = [425, 427, 411, 352, 345, 346, 347, 280, 330, 266, 423, 426
 left_eye_indices = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
 right_eye_indices = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
 eye_indices = left_eye_indices + right_eye_indices
-nose_indices = [193, 168, 417, 122, 351, 196, 419, 3, 248, 236, 456, 198, 420, 131, 360, 49, 279, 48, 278, 219, 439, 59, 289, 218, 438, 237, 457, 44, 19, 274]
-mouth_indices = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 185, 40, 39, 37, 0, 267, 269, 270, 409, 415, 310, 311, 312, 13, 82, 81, 42, 183, 78]
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh( static_image_mode=True,
-                                             max_num_faces=5,
-                                             refine_landmarks=True,
-                                             min_detection_confidence=0.5 )
-def apply_blush_to_region(image, landmarks, indices, color, intensity):
-    """
-    Apply blush effect to a specific facial region
+nose_indices = [193, 168, 417, 122, 351, 196, 419, 3, 248, 236, 456, 198, 420, 131, 360, 49, 279, 48, 278, 219, 439,
+                59, 289, 218, 438, 237, 457, 44, 19, 274]
+mouth_indices = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 185,
+                 40, 39, 37, 0, 267, 269, 270, 409, 415, 310, 311, 312, 13, 82, 81, 42, 183, 78]
 
-    Args:
-        image: Input image (numpy array)
-        landmarks: Facial landmarks from MediaPipe
-        indices: List of landmark indices for the region
-        color: BGR tuple for blush color
-        intensity: Float between 0 and 1 for effect strength
-    """
+def apply_blush_to_region(image, landmarks, indices, color, intensity):
     h, w = image.shape[:2]
 
     # Extract landmark points for the region
     points = []
     for idx in indices:
-        if idx < len(landmarks):
-            x = int(landmarks[idx].x * w)
-            y = int(landmarks[idx].y * h)
-            points.append([x, y])
+        x,y = landmarks[idx]
+        points.append([x, y])
 
     if len(points) < 3:
         return image
@@ -96,13 +82,10 @@ def apply_blush_to_region(image, landmarks, indices, color, intensity):
     return np.clip(blush_effect, 0, 255).astype(np.uint8)
 
 def create_region_mask(landmarks, indices, h, w):
-    """Helper to create a binary mask for a region using convex hull"""
     points = []
     for idx in indices:
-        if idx < len(landmarks):
-            x = int(landmarks[idx].x * w)
-            y = int(landmarks[idx].y * h)
-            points.append([x, y])
+        x,y = landmarks[idx]
+        points.append([x, y])
 
     if len(points) < 3:
         return np.zeros((h, w), dtype=np.float32)
@@ -113,79 +96,51 @@ def create_region_mask(landmarks, indices, h, w):
     cv2.fillConvexPoly(mask, hull, 255)
     return mask.astype(np.float32) / 255.0
 
-def apply_blush(image, color=(157, 107, 255), intensity=0.6):
-    """
-    Apply blush effect to all detected faces in the image
-
-    Args:
-        image: Input image (BGR format)
-        color: Blush color in BGR format (default: pink)
-        intensity: Effect intensity (0.0 to 1.0)
-
-    Returns:
-        Image with blush effect applied
-    """
-    # Convert BGR to RGB for MediaPipe
-    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-    # Detect faces
-    results = face_mesh.process(rgb_image)
-
-    if not results.multi_face_landmarks:
-        print("No faces detected!")
-        return image
-
+def apply_blush(image,landmarks, color=(157, 107, 255), intensity=0.6):
     output_image = image.copy()
 
-    # Process each detected face
-    for face_landmarks in results.multi_face_landmarks:
-        landmarks = face_landmarks.landmark
-        h, w = output_image.shape[:2]
+    h, w = output_image.shape[:2]
 
-        # Apply blush to right cheek
-        output_image = apply_blush_to_region(
-            output_image, landmarks, right_cheek_indices, color, intensity
-        )
+    # Apply blush to right cheek
+    output_image = apply_blush_to_region(
+        output_image, landmarks, right_cheek_indices, color, intensity
+    )
 
-        # Apply blush to left cheek
-        output_image = apply_blush_to_region(
-            output_image, landmarks, left_cheek_indices, color, intensity
-        )
+    # Apply blush to left cheek
+    output_image = apply_blush_to_region(
+        output_image, landmarks, left_cheek_indices, color, intensity
+    )
 
-        # Now erase blush from forbidden regions: outside face hull, eyes, nose, mouth
-        # Face hull mask using all landmarks (inside = 1)
-        all_points = []
-        for i in range(len(landmarks)):
-            x = int(landmarks[i].x * w)
-            y = int(landmarks[i].y * h)
-            all_points.append([x, y])
-        if len(all_points) >= 3:
-            all_points = np.array(all_points, dtype=np.int32)
-            face_mask_temp = np.zeros((h, w), dtype=np.uint8)
-            hull = cv2.convexHull(all_points)
-            cv2.fillConvexPoly(face_mask_temp, hull, 255)
-            face_mask = face_mask_temp.astype(np.float32) / 255.0
-        else:
-            face_mask = np.ones((h, w), dtype=np.float32)  # Fallback, unlikely
+    # Now erase blush from forbidden regions: outside face hull, eyes, nose, mouth
+    # Face hull mask using all landmarks (inside = 1)
+    all_points = landmarks
+    if len(all_points) >= 3:
+        all_points = np.array(all_points, dtype=np.int32)
+        face_mask_temp = np.zeros((h, w), dtype=np.uint8)
+        hull = cv2.convexHull(all_points)
+        cv2.fillConvexPoly(face_mask_temp, hull, 255)
+        face_mask = face_mask_temp.astype(np.float32) / 255.0
+    else:
+        face_mask = np.ones((h, w), dtype=np.float32)  # Fallback, unlikely
 
-        # Forbidden regions masks (inside region = 1)
-        eye_mask = create_region_mask(landmarks, eye_indices, h, w)
-        nose_mask = create_region_mask(landmarks, nose_indices, h, w)
-        mouth_mask = create_region_mask(landmarks, mouth_indices, h, w)
+    # Forbidden regions masks (inside region = 1)
+    eye_mask = create_region_mask(landmarks, eye_indices, h, w)
+    nose_mask = create_region_mask(landmarks, nose_indices, h, w)
+    mouth_mask = create_region_mask(landmarks, mouth_indices, h, w)
 
-        # Total forbidden: outside face OR eyes OR nose OR mouth
-        forbidden_mask = np.maximum(1 - face_mask, np.maximum(eye_mask, np.maximum(nose_mask, mouth_mask)))
+    # Total forbidden: outside face OR eyes OR nose OR mouth
+    forbidden_mask = np.maximum(1 - face_mask, np.maximum(eye_mask, np.maximum(nose_mask, mouth_mask)))
 
-        # Restore original image where forbidden
-        forbidden_3ch = cv2.merge([forbidden_mask, forbidden_mask, forbidden_mask])
-        # cv2.imshow('forbidden', forbidden_3ch)
-        # cv2.waitKey(0)
-        output_float = output_image.astype(np.float32)
-        original_float = image.astype(np.float32)
-        output_image = output_float * (1 - forbidden_3ch) + original_float * forbidden_3ch
-        output_image = np.clip(output_image, 0, 255).astype(np.uint8)
+    # Restore original image where forbidden
+    forbidden_3ch = cv2.merge([forbidden_mask, forbidden_mask, forbidden_mask])
+    # cv2.imshow('forbidden', forbidden_3ch)
+    # cv2.waitKey(0)
+    output_float = output_image.astype(np.float32)
+    original_float = image.astype(np.float32)
+    output_image = output_float * (1 - forbidden_3ch) + original_float * forbidden_3ch
+    output_image = np.clip(output_image, 0, 255).astype(np.uint8)
 
-    print(f"Applied blush to {len(results.multi_face_landmarks)} face(s)")
+    # print(f"Applied blush to {len(results.multi_face_landmarks)} face(s)")
     return output_image
 
 

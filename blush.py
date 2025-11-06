@@ -1,147 +1,194 @@
 import cv2
 import numpy as np
-import mediapipe as mp
-
-LEFT_CHEEK = [277, 426, 288, 356]
-RIGHT_CHEEK = [47, 206, 58, 127]
-C_LEFT = 280
-C_RIGHT = 50
-
-def compute_cheek_masks(
-    image,
-    landmarks,
-    box_ratio=[1, 1],
-    kernel_ratio=[[0.7, 0.7], [0.5, 0.5]],
-    mask_thresh=0.1,
-    indices_right=None,
-    indices_left=None,
-):
-    h, w, _ = image.shape
-    points = np.array(landmarks)
-
-    def sort_quad(pts):
-        # Sort to top-left, top-right, bottom-right, bottom-left
-        sorted_y = sorted(pts, key=lambda p: p[1])
-        top_two = sorted(sorted_y[:2], key=lambda p: p[0])
-        bottom_two = sorted(sorted_y[2:], key=lambda p: p[0])
-        top_left, top_right = top_two[0], top_two[1]
-        bottom_left, bottom_right = bottom_two[0], bottom_two[1]
-        return np.array([top_left, top_right, bottom_right, bottom_left])
-
-    def height_width(pts):
-        if len(pts) == 0:
-            return 0, 0
-        min_pt = np.min(pts, axis=0)
-        max_pt = np.max(pts, axis=0)
-        return max_pt[1] - min_pt[1], max_pt[0] - min_pt[0]
-
-    indices = [indices_right or RIGHT_CHEEK, indices_left or LEFT_CHEEK]
-    c_indices = [C_RIGHT, C_LEFT]
-    masks = []
-
-    for i, ids in enumerate(indices):
-        # 1) Get quad points
-        pts = points[ids]
-
-        # Sort quad for consistent order
-        pts_sorted = sort_quad(pts)
-
-        # 2) Get given center (no computation needed)
-        center = points[c_indices[i]]
-
-        # Full target points: sorted quad + center
-        pts_full = np.vstack([pts_sorted, center])
-
-        # 3) Height and width
-        height, width = height_width(pts_full)
-
-        # 4) Square side
-        side = int(box_ratio[i] * min(width, height))
-        if side % 2 == 0:
-            side += 1  # Make odd
-
-        # 5) Create delta and Gaussian kernel
-        mask_delta = np.zeros((side, side), dtype=np.float32)
-        midpoint = (side - 1) // 2
-        mask_delta[midpoint, midpoint] = 1.0
-
-        sigma_x = kernel_ratio[i][0] * (0.5 * (side - 1) - 1) + 0.8
-        sigma_y = kernel_ratio[i][1] * (0.5 * (side - 1) - 1) + 0.8
-        kernel = cv2.GaussianBlur(mask_delta, (side, side), sigmaX=sigma_x, sigmaY=sigma_y,
-                                  borderType=cv2.BORDER_ISOLATED)
-
-        # 6) Normalize and threshold
-        min_val, max_val = np.min(kernel), np.max(kernel)
-        norm_kernel = (kernel - min_val) / (max_val - min_val) if max_val > min_val else kernel
-        norm_kernel -= mask_thresh
-        norm_kernel = np.clip(norm_kernel, 0, 1)
-
-        # 7) Source points for homography: top-left, top-right, bottom-right, bottom-left, center
-        src_points = np.array([
-            [0, 0],                # top-left
-            [side - 1, 0],         # top-right
-            [side - 1, side - 1],  # bottom-right
-            [0, side - 1],         # bottom-left
-            [midpoint, midpoint]   # center
-        ], dtype=np.float32)
-
-        # Target points: sorted quad + center
-        tgt_points = np.array(pts_full, dtype=np.float32)
-
-        # 8) Homography
-        homography, _ = cv2.findHomography(src_points, tgt_points)
-
-        # 9) Warp
-        warped_mask = cv2.warpPerspective(norm_kernel, homography, (w, h))
-
-        # 10) Append
-        masks.append(warped_mask)
-
-    return masks  # [right, left]
 
 
-def apply_blush(image,landmarks, strength=0.0, color=(255, 20, 20), indices_right=RIGHT_CHEEK, indices_left=LEFT_CHEEK):
+right_cheek_indices = [205, 207, 187, 123, 116, 117, 118, 50, 101, 36, 203, 206]
+left_cheek_indices = [425, 427, 411, 352, 345, 346, 347, 280, 330, 266, 423, 426]
 
-    if image is None:
-        return None
+left_eye_indices = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
+right_eye_indices = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+eye_indices = left_eye_indices + right_eye_indices
+nose_indices = [193, 168, 417, 122, 351, 196, 419, 3, 248, 236, 456, 198, 420, 131, 360, 49, 279, 48, 278, 219, 439,
+                59, 289, 218, 438, 237, 457, 44, 19, 274]
+mouth_indices = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 185,
+                 40, 39, 37, 0, 267, 269, 270, 409, 415, 310, 311, 312, 13, 82, 81, 42, 183, 78]
 
-    if strength <= 0:
-        return image.copy()
+def apply_blush_to_region(image, landmarks, indices, color, intensity):
+    h, w = image.shape[:2]
 
+    points = []
+    for idx in indices:
+        x,y = landmarks[idx]
+        points.append([x, y])
 
-    # Compute cheek masks and combine
-    right_mask, left_mask = compute_cheek_masks(
-        image,
-        landmarks,
-        indices_right=indices_right,
-        indices_left=indices_left,
+    if len(points) < 3:
+        return image
+
+    points = np.array(points)
+
+    center_x = int(np.mean(points[:, 0]))
+    center_y = int(np.mean(points[:, 1]))
+
+    distances = np.sqrt(np.sum((points - [center_x, center_y]) ** 2, axis=1))
+    radius = int(np.max(distances) * 1.3)
+
+    mask = np.zeros((h, w), dtype=np.float32)
+
+    for y in range(max(0, center_y - radius), min(h, center_y + radius)):
+        for x in range(max(0, center_x - radius), min(w, center_x + radius)):
+            dist = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+            if dist < radius:
+                alpha = (1 - (dist / radius)) ** 2
+                mask[y, x] = alpha * intensity
+
+    mask = cv2.GaussianBlur(mask, (99, 99), 0)
+
+    blush_overlay = np.zeros_like(image, dtype=np.float32)
+    blush_overlay[:] = color
+
+    mask_3channel = cv2.merge([mask, mask, mask])
+
+    blended = image.astype(np.float32)
+    blush_effect = blended * (1 - mask_3channel * 0.6) + blush_overlay * mask_3channel * 0.6
+
+    highlight_mask = np.zeros((h, w), dtype=np.float32)
+    highlight_radius = int(radius * 0.5)
+    highlight_center_y = center_y - int(radius * 0.15)
+
+    for y in range(max(0, highlight_center_y - highlight_radius), min(h, highlight_center_y + highlight_radius)):
+        for x in range(max(0, center_x - highlight_radius), min(w, center_x + highlight_radius)):
+            dist = np.sqrt((x - center_x) ** 2 + (y - highlight_center_y) ** 2)
+            if dist < highlight_radius:
+                alpha = (1 - (dist / highlight_radius)) ** 2
+                highlight_mask[y, x] = alpha * intensity * 0.2
+
+    highlight_mask = cv2.GaussianBlur(highlight_mask, (51, 51), 0)
+    highlight_mask_3ch = cv2.merge([highlight_mask, highlight_mask, highlight_mask])
+
+    blush_effect = blush_effect + highlight_mask_3ch * 30
+
+    return np.clip(blush_effect, 0, 255).astype(np.uint8)
+
+def create_region_mask(landmarks, indices, h, w):
+    points = []
+    for idx in indices:
+        x,y = landmarks[idx]
+        points.append([x, y])
+
+    if len(points) < 3:
+        return np.zeros((h, w), dtype=np.float32)
+
+    points = np.array(points, dtype=np.int32)
+    hull = cv2.convexHull(points)
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillConvexPoly(mask, hull, 255)
+    return mask.astype(np.float32) / 255.0
+
+def apply_blush(image,landmarks, color=(157, 107, 255), intensity=0.6):
+    output_image = image.copy()
+
+    h, w = output_image.shape[:2]
+
+    # Apply blush to right cheek
+    output_image = apply_blush_to_region(
+        output_image, landmarks, right_cheek_indices, color, intensity
     )
-    mask = np.maximum(right_mask, left_mask).astype(np.float32)
 
-    # Prepare for YCrCb blending
-    mask_normalized = np.clip(mask, 0.0, 1.0)
-    im_ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb).astype(np.float32) / 255.0
+    # Apply blush to left cheek
+    output_image = apply_blush_to_region(
+        output_image, landmarks, left_cheek_indices, color, intensity
+    )
 
-    bgr_mat = np.array([[[color[2], color[1], color[0]]]], dtype=np.uint8)
-    ycrcb_mat = cv2.cvtColor(bgr_mat, cv2.COLOR_BGR2YCrCb)
-    target_ycrcb = (ycrcb_mat[0, 0].astype(np.float32) / 255.0)[::-1]
+    all_points = landmarks
+    if len(all_points) >= 3:
+        all_points = np.array(all_points, dtype=np.int32)
+        face_mask_temp = np.zeros((h, w), dtype=np.uint8)
+        hull = cv2.convexHull(all_points)
+        cv2.fillConvexPoly(face_mask_temp, hull, 255)
+        face_mask = face_mask_temp.astype(np.float32) / 255.0
+    else:
+        face_mask = np.ones((h, w), dtype=np.float32)
 
-    indices = np.where(mask_normalized > 0)
-    if len(indices[0]) == 0:
-        return image.copy()
+    eye_mask = create_region_mask(landmarks, eye_indices, h, w)
+    nose_mask = create_region_mask(landmarks, nose_indices, h, w)
+    mouth_mask = create_region_mask(landmarks, mouth_indices, h, w)
 
-    weights = mask_normalized[indices]
-    masked_pixels = im_ycrcb[indices]
-    m = np.average(masked_pixels, axis=0, weights=weights)
+    forbidden_mask = np.maximum(1 - face_mask, np.maximum(eye_mask, np.maximum(nose_mask, mouth_mask)))
 
-    mpxl = np.clip(mask_normalized[indices] * float(strength), 0.0, 1.0)
-    src_pxl = im_ycrcb[indices]
+    forbidden_3ch = cv2.merge([forbidden_mask, forbidden_mask, forbidden_mask])
+    # cv2.imshow('forbidden', forbidden_3ch)
+    # cv2.waitKey(0)
+    output_float = output_image.astype(np.float32)
+    original_float = image.astype(np.float32)
+    output_image = output_float * (1 - forbidden_3ch) + original_float * forbidden_3ch
+    output_image = np.clip(output_image, 0, 255).astype(np.uint8)
 
-    for idx in range(3):
-        im_ycrcb[indices[0], indices[1], idx] = (
-            mpxl * (target_ycrcb[idx] + (src_pxl[:, idx] - m[idx])) + (1 - mpxl) * src_pxl[:, idx]
-        )
+    return output_image
 
-    im_out = cv2.cvtColor(im_ycrcb, cv2.COLOR_YCrCb2BGR) * 255.0
-    result = np.clip(im_out, 0, 255).astype(np.uint8)
-    return result
+
+
+def main():
+    """Demo usage of the FaceBlushEffect class"""
+
+    # Load image
+    image_path = "imgs/face_ce.jpg"  # Change this to your image path
+    image = cv2.imread(image_path)
+    image = cv2.resize(image, (640, 480))
+    if image is None:
+        print(f"Error: Could not load image from {image_path}")
+        return
+
+    print(f"Processing image: {image_path}")
+    print(f"Image size: {image.shape[1]}x{image.shape[0]}")
+
+    # Apply different blush effects
+    # Pink blush (default)
+    result1 = apply_blush(image, color=(157, 107, 255), intensity=1)
+
+    # Rose blush
+    result2 = apply_blush(image, color=(193, 143, 255), intensity=1)
+
+    # Coral blush
+    result3 = apply_blush(image, color=(114, 128, 255), intensity=1)
+
+    # Display results
+    # Resize for display if image is too large
+    max_display_width = 800
+    if image.shape[1] > max_display_width:
+        scale = max_display_width / image.shape[1]
+        display_height = int(image.shape[0] * scale)
+
+        original_display = cv2.resize(image, (max_display_width, display_height))
+        result1_display = cv2.resize(result1, (max_display_width, display_height))
+        result2_display = cv2.resize(result2, (max_display_width, display_height))
+        result3_display = cv2.resize(result3, (max_display_width, display_height))
+    else:
+        original_display = image
+        result1_display = result1
+        result2_display = result2
+        result3_display = result3
+
+    # # Show images
+    # cv2.imshow('Original', original_display)
+    # cv2.imshow('Pink Blush', result1_display)
+    # cv2.imshow('Rose Blush', result2_display)
+    # cv2.imshow('Coral Blush', result3_display)
+    #
+    # # Save results
+    # cv2.imwrite('output_pink_blush.jpg', result1)
+    # cv2.imwrite('output_rose_blush.jpg', result2)
+    # cv2.imwrite('output_coral_blush.jpg', result3)
+    #
+    # print("\nResults saved:")
+    # print("- output_pink_blush.jpg")
+    # print("- output_rose_blush.jpg")
+    # print("- output_coral_blush.jpg")
+    # print("\nPress any key to close windows...")
+    #
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+
+    main()

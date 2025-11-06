@@ -10,7 +10,7 @@ mid_jaw = 152
 
 # left_cheek = [147,213,192,214]
 # right_cheek = [376,433,415,434]
-lrn = [58, 288, 4]
+lrn = [389,9,162]
 mp_face_mesh = mp.solutions.face_mesh
 
 

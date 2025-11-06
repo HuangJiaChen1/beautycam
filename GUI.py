@@ -23,7 +23,7 @@ from res import enhance_face_detail
 from white_eye import white_eyes
 from white_teeth import white_teeth
 from lipstick import lipstick as apply_lipstick
-from test_blush import apply_blush
+from blush import apply_blush
 from zuijiao import zuijiao
 
 mp_face_mesh = mp.solutions.face_mesh
@@ -31,13 +31,25 @@ EYE_INDICES = [374, 380, 390, 373, 249, 385, 384, 263, 466, 387, 386, 381, 382, 
 # BOUNDARY = [9,70,111,122,351,293,340]
 # 355,358,327,289,392,309,459,458,250,290 鼻子边缘，如需要从4开始粘贴
 BOUNDARY = [270, 409, 317, 402, 81, 82, 91, 181, 37, 0, 84, 17, 269, 321, 375, 318, 324, 312, 311, 415, 308, 314, 61,
-            146, 78, 95, 267, 13, 405, 178, 87, 185, 14, 88, 40, 291, 191, 310, 39, 80,4,334, 296, 276, 283, 293, 295, 285,
-            336, 282, 300,46, 53, 66, 107, 52, 65, 63, 105, 70, 55, 374, 380, 390, 373, 249, 385, 384, 263, 466, 387,
-            386, 381, 382, 398, 388, 362, 154, 155, 33, 7, 246, 161, 159, 158, 144, 145, 173, 133, 157, 163, 153, 160,
-            132,58,172, 136, 150, 149, 176, 148,361,288,397, 365, 379, 378, 400,377,152,473,468,116,123,345,352,103,67,
+            146, 78, 95, 267, 13, 405, 178, 87, 185, 14, 88, 40, 291, 191, 310, 39, 80, #LIPS AND TEETH
+
+            4, #NOSETIP
+
+            334, 296, 276, 283, 293, 295, 285,336, 282, 300,46, 53, 66, 107, 52, 65, 63, 105, 70, 55, #EYEBROWS
+
+            374, 380,390, 373, 249, 385, 384, 263, 466, 387,386, 381, 382, 398, 388, 362, 154, 155, 33, 7, 246, 161,
+            159, 158, 144, 145, 173, 133, 157, 163, 153, 160, #LEFT RIGHT EYE
+
+            132,58,172, 136, 150, 149, 176, 148,361,288,397, 365, 379, 378, 400,377,152, #JAWLINE
+
+            473,468, #IRIS
+
+            116,123,345,352,103,67, #LEFT RIGHT QUANGU
+
             109,10,338,297,332,126,129,98,75,166,79,239,238,20,60,355,358,327,289,392,309,459,458,250,290,97,2,327,326,
-            48,115,220,45,275,440,344,278,280,50]
-#BOUNDARY = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,172, 58, 132, 93,234, 127, 162, 21, 54, 103, 67, 109, 10]
+            48,115,220,45,275,440,344,278,280,50,389,9,162]
+#BOUNDARY = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323,
+# 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,172, 58, 132, 93,234, 127, 162, 21, 54, 103, 67, 109, 10]
 DAYAN_DEFAULT = 1
 SHOULIAN_DEFAULT = 1
 QUANGU_DEFAULT = 1
@@ -131,7 +143,7 @@ def process_image(image, DAYAN, SHOULIAN, QUANGU, BIYI, LONGNOSE, RENZHONG, ZHAI
             processed_image = white_eyes(processed_image, all_2d,WHITE_EYE)
             processed_image = white_teeth(processed_image,all_2d, WHITE_TEETH)
             processed_image = apply_lipstick(processed_image, all_2d, LIPSTICK)
-            processed_image = apply_blush(processed_image, color=(157, 107, 255), intensity=BLUSH)
+            processed_image = apply_blush(processed_image,all_2d, color=(157, 107, 255), intensity=BLUSH)
 
             if apply_bg_blur:
                 processed_image = bg_blur(processed_image)
@@ -301,7 +313,7 @@ DAZUI_var = tk.DoubleVar(value=DAZUI_DEFAULT)
 
 tk.Scale(control_frame, from_=1.0, to=1.1, resolution=0.01, orient=tk.HORIZONTAL, label="大眼", variable=DAYAN_var,
          command=lambda x: update_image()).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=0.92, to=1.0, resolution=0.005, orient=tk.HORIZONTAL, label="瘦脸", variable=SHOULIAN_var,
+tk.Scale(control_frame, from_=0.95, to=1.0, resolution=0.005, orient=tk.HORIZONTAL, label="瘦脸", variable=SHOULIAN_var,
          command=lambda x: update_image()).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 tk.Scale(control_frame, from_=0.95, to=1.0, resolution=0.005, orient=tk.HORIZONTAL, label="颧骨", variable=QUANGU_var,
          command=lambda x: update_image()).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
@@ -350,7 +362,7 @@ tk.Scale(control_frame,
          variable=BLACK_var,
          command=lambda x: update_image()).grid(row=6, column=1, padx=5, pady=5, sticky="ew")
 tk.Scale(control_frame,
-         from_=1, to=1.5, resolution=0.02,
+         from_=1, to=1.2, resolution=0.02,
          orient=tk.HORIZONTAL,
          label="亮眼",
          variable=WHITE_EYE_var,

@@ -57,5 +57,4 @@ def black_filter(image, landmarks, strength=1.0):
     result = image.copy()
     result[y1:y2, x1:x2] = crop_blended
 
-    face_mesh.close()
     return result

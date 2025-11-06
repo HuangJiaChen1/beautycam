@@ -1,89 +1,75 @@
 import cv2
-import json
-import numpy as np
 import mediapipe as mp
-from typing import Dict, Tuple, List
 
+mp_drawing = mp.solutions.drawing_utils
+mp_drawing_styles = mp.solutions.drawing_styles
+mp_face_mesh = mp.solutions.face_mesh
 
-def _landmarks_pixel_coords(image_bgr: np.ndarray, refine: bool = True) -> List[Tuple[int, int]]:
-    h, w = image_bgr.shape[:2]
-    with mp.solutions.face_mesh.FaceMesh(
+# For static images:
+IMAGE_FILES = ['imgs/face_high.jpg']
+INDICES = [109,10,338,297,332,126,129,98,75,166,79,239,238,20,60,355,358,327,289,392,309,459,458,250,290,97,2,327,326,48,115,220,45,275,440,344,278,280,50,389,9,162]
+drawing_spec = mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
+
+with mp_face_mesh.FaceMesh(
         static_image_mode=True,
         max_num_faces=1,
-        refine_landmarks=refine,
-        min_detection_confidence=0.5,
-    ) as fm:
-        res = fm.process(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
-        if not res.multi_face_landmarks:
-            return []
-        lm = res.multi_face_landmarks[0].landmark
-        pts = [(int(round(p.x * w)), int(round(p.y * h))) for p in lm]
-        return pts
+        refine_landmarks=True,
+        min_detection_confidence=0.5) as face_mesh:
+    for idx, file in enumerate(IMAGE_FILES):
+        image = cv2.imread(file)
+        # image = cv2.resize(image, (8000, 8000), interpolation=cv2.INTER_LANCZOS4)
+        # Convert the BGR image to RGB before processing.
+        image = cv2.flip(image, 1)
+        results = face_mesh.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
 
+        # Print and draw face mesh landmarks on the image.
+        if not results.multi_face_landmarks:
+            continue
+        annotated_image = image.copy()
 
-def build_mirror_index_map(
-    img_path: str = 'imgs/face_celian.jpg',
-    target_size: Tuple[int, int] = (1000, 1000),
-    refine: bool = True,
-) -> Dict[int, int]:
-    """
-    - Loads the image at `img_path` and resizes to `target_size` (w,h).
-    - Gets FaceMesh landmarks on the original image and the horizontally flipped image.
-    - Converts flipped landmark coordinates back to the original coordinate system (mirror x).
-    - For every landmark index i in the original whose (x,y) exactly matches any mirrored flipped (x,y),
-      maps i -> j where j is the representative flipped index sharing the same coordinate.
-    Returns a dictionary {original_index: flipped_index}.
-    """
+        for face_landmarks in results.multi_face_landmarks:
+            print('face_landmarks:', face_landmarks)
 
-    # 1) Load and scale to 8000x8000
-    img = cv2.imread(img_path)
-    if img is None:
-        raise FileNotFoundError(f"Could not read image at {img_path}")
+            # Draw the mesh tessellation
+            mp_drawing.draw_landmarks(
+                image=annotated_image,
+                landmark_list=face_landmarks,
+                connections=mp_face_mesh.FACEMESH_TESSELATION,
+                landmark_drawing_spec=None,
+                connection_drawing_spec=mp_drawing_styles
+                .get_default_face_mesh_tesselation_style())
 
-    target_w, target_h = target_size
-    img = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            # Draw the contours
+            mp_drawing.draw_landmarks(
+                image=annotated_image,
+                landmark_list=face_landmarks,
+                connections=mp_face_mesh.FACEMESH_FACE_OVAL,
+                landmark_drawing_spec=None,
+                connection_drawing_spec=mp_drawing_styles
+                .get_default_face_mesh_contours_style())
 
-    # 2) Landmarks on original
-    orig_pts = _landmarks_pixel_coords(img, refine=refine)
-    if not orig_pts:
-        raise RuntimeError("No face landmarks detected on original image.")
+            # Draw the irises
+            mp_drawing.draw_landmarks(
+                image=annotated_image,
+                landmark_list=face_landmarks,
+                connections=mp_face_mesh.FACEMESH_IRISES,
+                landmark_drawing_spec=None,
+                connection_drawing_spec=mp_drawing_styles
+                .get_default_face_mesh_iris_connections_style())
 
-    # 3) Flip and landmarks on flipped
-    flipped = cv2.flip(img, 1)
-    cv2.imshow("Original", img)
-    cv2.imshow("Flipped", flipped)
-    cv2.waitKey(0)
-    flip_pts = _landmarks_pixel_coords(flipped, refine=refine)
-    if not flip_pts:
-        raise RuntimeError("No face landmarks detected on flipped image.")
+            # Annotate each point with its index number
+            for i, landmark in enumerate(face_landmarks.landmark):
+                if i in INDICES:
+                    # Convert normalized coordinates to pixel values
+                    x = int(landmark.x * image.shape[1])
+                    y = int(landmark.y * image.shape[0])
+                    # Draw the point number next to each point
+                    cv2.putText(annotated_image, str(i), (x + 5, y - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+                    cv2.circle(annotated_image,(x, y), 1, (0, 255, 0), 2)
+        # Show the annotated image with point numbers
+        # cv2.imshow('image', annotated_image)
+        # cv2.waitKey(0)
 
-    flip_back_pts = [(8000-x, y) for (x, y) in flip_pts]
-    print(orig_pts)
-    print(flip_pts)
-    # print(flip_back_pts)
-    # 4) Build dictionary for exact matches
-    coord_to_flip_indices: Dict[Tuple[int, int], List[int]] = {}
-    for j, xy in enumerate(flip_back_pts):
-        coord_to_flip_indices.setdefault(xy, []).append(j)
-
-    mapping: Dict[int, int] = {}
-    for i, xy in enumerate(orig_pts):
-        if xy in coord_to_flip_indices:
-            # Representative flipped index = first occurrence
-            mapping[i] = coord_to_flip_indices[xy][0]
-
-    return mapping
-
-
-if __name__ == '__main__':
-    mapping = build_mirror_index_map()
-    print(f"Exact-coordinate mirror matches: {len(mapping)} landmarks")
-    # Pretty print a small sample
-    sample_items = list(mapping.items())[:20]
-    for k, v in sample_items:
-        print(f"{k} -> {v}")
-
-    # Save full mapping for inspection
-    with open('point_match_map.json', 'w', encoding='utf-8') as f:
-        json.dump(mapping, f, ensure_ascii=False, indent=2)
-    print("Saved mapping to point_match_map.json")
+        # Optionally save the annotated image
+        cv2.imwrite('point_match.jpg', annotated_image)
