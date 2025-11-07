@@ -158,7 +158,7 @@ def process_image(image, DAYAN, SHOULIAN, QUANGU, BIYI, LONGNOSE, RENZHONG, ZHAI
                 H, S, V, MOPI,
 
             )
-            processed_image = enhance_face_detail(processed_image, strength_pct=DETAIL)
+            processed_image = enhance_face_detail(processed_image, all_2d, strength_pct=DETAIL)
             processed_image = nasolabial_folds_filter(processed_image,all_2d, FALING)
             processed_image = black_filter(processed_image,all_2d, BLACK)
             processed_image = white_eyes(processed_image, all_2d,WHITE_EYE)
@@ -230,12 +230,9 @@ def update_image():
     image_label.config(image=display_image_tk)
     image_label.image = display_image_tk
     error_label.config(text="")
-
-    # Update button text
     blur_button.config(text="取消模糊背景" if bg_blur_enabled else "模糊背景")
 
 
-# === Toggle Background Blur ===
 def toggle_bg_blur():
     global bg_blur_enabled
     bg_blur_enabled = not bg_blur_enabled
@@ -263,9 +260,12 @@ def save_image():
         SHOULIAN_var.get(),
         QUANGU_var.get(),
         BIYI_var.get(),
+        LONGNOSE_var.get(),
         RENZHONG_var.get(),
         ZHAILIAN_var.get(),
         FOREHEAD_var.get(),
+        ZUIJIAO_var.get(),
+        DAZUI_var.get(),
         H_DEFAULT,
         S_var.get(),
         V_var.get(),
@@ -356,10 +356,10 @@ tk.Scale(control_frame, from_=0.9, to=1.1, resolution=0.005, orient=tk.HORIZONTA
 #          command=lambda x: update_image()).pack(padx=5, pady=5)
 # text = tk.StringVar(value="调整S，V来调整美白和冷暖\nS不宜超过0.20，V不宜超过0.10")
 # tk.Label(control_frame, textvariable=text, font=("Arial", 9)).grid(row=2, column=0, columnspan=2, padx=5, sticky="w")
-tk.Scale(control_frame, from_=0.0, to=0.08, resolution=0.002, orient=tk.HORIZONTAL, label="S", variable=S_var,
+tk.Scale(control_frame, from_=0.0, to=0.08, resolution=0.002, orient=tk.HORIZONTAL, label="美白", variable=S_var,
          command=lambda x: update_image()).grid(row=3, column=0, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=0.0, to=0.03, resolution=0.002, orient=tk.HORIZONTAL, label="V", variable=V_var,
-         command=lambda x: update_image()).grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+# tk.Scale(control_frame, from_=0.0, to=0.03, resolution=0.002, orient=tk.HORIZONTAL, label="V", variable=V_var,
+#          command=lambda x: update_image()).grid(row=3, column=1, padx=5, pady=5, sticky="ew")
 # text = tk.StringVar(value="根据美图秀秀，其磨皮拉满约等于这\n里数值0.30，因此不宜超过0.30")
 # tk.Label(control_frame, textvariable=text, font=("Arial", 9)).grid(row=4, column=0, columnspan=2, padx=5, sticky="w")
 tk.Scale(control_frame, from_=0, to=0.5, resolution=0.01, orient=tk.HORIZONTAL, label="磨皮", variable=MOPI_var,
@@ -396,7 +396,7 @@ tk.Scale(control_frame,
          command=lambda x: update_image()).grid(row=7, column=1, padx=5, pady=5, sticky="ew")
 
 tk.Scale(control_frame,
-         from_=0.0, to=0.3, resolution=0.01,
+         from_=0.0, to=0.5, resolution=0.01,
          orient=tk.HORIZONTAL,
          label="口红",
          variable=LIPSTICK_var,

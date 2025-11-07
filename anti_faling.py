@@ -4,37 +4,47 @@ import numpy as np
 
 
 def nasolabial_folds_filter(image, landmarks, strength):
-
     if strength <= 0:
         return image
 
-
     h, w, _ = image.shape
 
-    left_indices = [36, 165, 92, 186,57,207]
-    right_indices = [391,432,411,266]
+    left_indices = [36, 165, 92, 186, 57, 207]
+    right_indices = [391, 432, 411, 266]
 
-    left_coords = [landmarks[i] for i in left_indices]
-    right_coords = [landmarks[i] for i in right_indices]
+    left_coords = np.array([landmarks[i] for i in left_indices], np.int32)
+    right_coords = np.array([landmarks[i] for i in right_indices], np.int32)
 
-    mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.fillPoly(mask, [np.array(left_coords)], 255)
-    cv2.fillPoly(mask, [np.array(right_coords)], 255)
+    mask_u8 = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask_u8, [left_coords], 255)
+    cv2.fillPoly(mask_u8, [right_coords], 255)
 
-    # mask = cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=1)
-    mask = mask / 255.0
-    mask = cv2.GaussianBlur(mask, (31, 31), 0)
-    # cv2.imshow('mask', mask)
-    # cv2.waitKey(0)
+    # Determine a tight ROI around the mask for faster filtering
+    contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return image
+    x, y, rw, rh = cv2.boundingRect(np.vstack(contours))
+    border = max(8, int(12 * strength))
+    x1 = max(x - border, 0)
+    y1 = max(y - border, 0)
+    x2 = min(x + rw + border, w)
+    y2 = min(y + rh + border, h)
 
-    blurred = cv2.bilateralFilter(image, d=int(32*strength), sigmaColor=128*strength, sigmaSpace=16*strength)
-    alpha = mask[..., np.newaxis]          # (H, W, 1)
+    mask_roi = mask_u8[y1:y2, x1:x2].astype(np.float32) / 255.0
+    mask_roi = cv2.GaussianBlur(mask_roi, (31, 31), 0)
+    alpha = mask_roi[..., np.newaxis]
 
-    original = image.astype(np.float32)
-    blurred = blurred.astype(np.float32)
+    crop = image[y1:y2, x1:x2]
+    d = max(5, int(32 * strength))
+    crop_blur = cv2.bilateralFilter(crop, d=d, sigmaColor=128 * strength, sigmaSpace=16 * strength)
 
-    blended = original * (1 - alpha) + blurred * alpha
-    return blended.astype(np.uint8)
+    orig_f = crop.astype(np.float32)
+    blur_f = crop_blur.astype(np.float32)
+    blended = orig_f * (1 - alpha) + blur_f * alpha
+
+    result = image.copy()
+    result[y1:y2, x1:x2] = blended.astype(np.uint8)
+    return result
     # result = image.copy()
     # result[mask > 0] = blended[mask > 0]
     #

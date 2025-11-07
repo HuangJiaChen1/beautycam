@@ -27,7 +27,6 @@ def black_filter(image, landmarks, strength=1.0):
 
     contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        face_mesh.close()
         return image.copy()
     x, y, rw, rh = cv2.boundingRect(np.vstack(contours))
 

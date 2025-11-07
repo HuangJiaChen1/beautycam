@@ -16,58 +16,47 @@ mouth_indices = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 31
 def apply_blush_to_region(image, landmarks, indices, color, intensity):
     h, w = image.shape[:2]
 
-    points = []
-    for idx in indices:
-        x,y = landmarks[idx]
-        points.append([x, y])
-
+    points = np.array([landmarks[idx] for idx in indices], dtype=np.int32)
     if len(points) < 3:
         return image
 
-    points = np.array(points)
+    center = points.mean(axis=0).astype(np.int32)
+    center_x, center_y = int(center[0]), int(center[1])
+    radius = int(np.max(np.sqrt(np.sum((points - center) ** 2, axis=1))) * 1.3)
 
-    center_x = int(np.mean(points[:, 0]))
-    center_y = int(np.mean(points[:, 1]))
+    x1 = max(center_x - radius, 0)
+    y1 = max(center_y - radius, 0)
+    x2 = min(center_x + radius, w)
+    y2 = min(center_y + radius, h)
+    if x2 <= x1 or y2 <= y1:
+        return image
 
-    distances = np.sqrt(np.sum((points - [center_x, center_y]) ** 2, axis=1))
-    radius = int(np.max(distances) * 1.3)
+    yy, xx = np.ogrid[y1:y2, x1:x2]
+    dist = np.sqrt((xx - center_x) ** 2 + (yy - center_y) ** 2)
+    mask_local = np.clip(1 - (dist / max(radius, 1)), 0, 1)
+    mask_local = (mask_local ** 2) * float(intensity)
+    mask_local = cv2.GaussianBlur(mask_local.astype(np.float32), (99, 99), 0)
 
-    mask = np.zeros((h, w), dtype=np.float32)
-
-    for y in range(max(0, center_y - radius), min(h, center_y + radius)):
-        for x in range(max(0, center_x - radius), min(w, center_x + radius)):
-            dist = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
-            if dist < radius:
-                alpha = (1 - (dist / radius)) ** 2
-                mask[y, x] = alpha * intensity
-
-    mask = cv2.GaussianBlur(mask, (99, 99), 0)
-
-    blush_overlay = np.zeros_like(image, dtype=np.float32)
+    blush_overlay = np.zeros((y2 - y1, x2 - x1, 3), dtype=np.float32)
     blush_overlay[:] = color
 
-    mask_3channel = cv2.merge([mask, mask, mask])
+    roi = image[y1:y2, x1:x2].astype(np.float32)
+    mask3 = np.repeat(mask_local[..., None], 3, axis=2) * 0.6
+    blush_effect = roi * (1 - mask3) + blush_overlay * mask3
 
-    blended = image.astype(np.float32)
-    blush_effect = blended * (1 - mask_3channel * 0.6) + blush_overlay * mask_3channel * 0.6
+    # Highlight
+    h_radius = int(radius * 0.5)
+    hc_y = center_y - int(radius * 0.15)
+    yy2, xx2 = np.ogrid[y1:y2, x1:x2]
+    dist_h = np.sqrt((xx2 - center_x) ** 2 + (yy2 - hc_y) ** 2)
+    h_mask = np.clip(1 - (dist_h / max(h_radius, 1)), 0, 1)
+    h_mask = (h_mask ** 2) * float(intensity) * 0.2
+    h_mask = cv2.GaussianBlur(h_mask.astype(np.float32), (51, 51), 0)
+    blush_effect += np.repeat(h_mask[..., None], 3, axis=2) * 30
 
-    highlight_mask = np.zeros((h, w), dtype=np.float32)
-    highlight_radius = int(radius * 0.5)
-    highlight_center_y = center_y - int(radius * 0.15)
-
-    for y in range(max(0, highlight_center_y - highlight_radius), min(h, highlight_center_y + highlight_radius)):
-        for x in range(max(0, center_x - highlight_radius), min(w, center_x + highlight_radius)):
-            dist = np.sqrt((x - center_x) ** 2 + (y - highlight_center_y) ** 2)
-            if dist < highlight_radius:
-                alpha = (1 - (dist / highlight_radius)) ** 2
-                highlight_mask[y, x] = alpha * intensity * 0.2
-
-    highlight_mask = cv2.GaussianBlur(highlight_mask, (51, 51), 0)
-    highlight_mask_3ch = cv2.merge([highlight_mask, highlight_mask, highlight_mask])
-
-    blush_effect = blush_effect + highlight_mask_3ch * 30
-
-    return np.clip(blush_effect, 0, 255).astype(np.uint8)
+    out = image.copy().astype(np.float32)
+    out[y1:y2, x1:x2] = blush_effect
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 def create_region_mask(landmarks, indices, h, w):
     points = []
