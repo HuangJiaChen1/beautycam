@@ -3,8 +3,8 @@ import mediapipe as mp
 import numpy as np
 from affine_transformation import warp_image_piecewise_affine
 
-left_cheek = [132,58,172, 136, 150, 149, 176, 148]
-right_cheek = [361,288,397, 365, 379, 378, 400, 377]
+left_cheek = [234,93,132,58,172, 136, 150, 149, 176, 148,]
+right_cheek = [323,454,361,288,397, 365, 379, 378, 400, 377]
 mid_jaw = 152
 
 

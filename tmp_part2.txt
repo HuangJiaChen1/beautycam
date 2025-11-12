@@ -1,0 +1,200 @@
+        if not face_results.multi_face_landmarks:
+            print("No face landmarks detected.")
+            cached_face_landmarks = []
+        else:
+            cached_face_landmarks = face_results.multi_face_landmarks
+
+    # Run selfie segmentation inference
+    with mp_selfie_segmentation.SelfieSegmentation(model_selection=1) as selfie_seg:
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        seg_results = selfie_seg.process(image_rgb)
+        cached_segmentation_mask = seg_results.segmentation_mask if seg_results else None
+
+    return cached_face_landmarks, cached_segmentation_mask
+
+
+def process_image(image, selected_faces, apply_bg_blur=False):
+    global cached_face_landmarks, cached_segmentation_mask, face_params
+
+    if image is None:
+        print("Error: Input image is None.")
+        return None
+
+    # Use cached landmarks instead of running inference again
+    if cached_face_landmarks is None or len(cached_face_landmarks) == 0:
+        print("No face landmarks available.")
+        if apply_bg_blur:
+            return bg_blur(image)
+        return image
+
+    if len(selected_faces) == 0:
+        if apply_bg_blur:
+            return bg_blur(image)
+        return image
+
+    num_faces = len(cached_face_landmarks)
+    h_img, w_img, _ = image.shape
+    corner_indices = [-1, -2, -3, -4]
+    corner_points = [
+        transform_to_3d(0, 0, 1),
+        transform_to_3d(w_img - 1, 0, 1),
+        transform_to_3d(w_img - 1, h_img - 1, 1),
+        transform_to_3d(0, h_img - 1, 1)
+    ]
+    corners_dict = dict(zip(corner_indices, corner_points))
+
+    # First warp: shoulian
+    shoulian_src = corners_dict.copy()
+    shoulian_dst = corners_dict.copy()
+
+    # Add shoulian points for all faces (fixed initially)
+    for face_idx in range(num_faces):
+        base = face_idx * POINT_OFFSET
+        lm = cached_face_landmarks[face_idx]
+        face_all_point = get_points_all(lm.landmark, w_img, h_img)
+        for local in SHOULIAN_INDICES:
+            gidx = base + local
+            pt = face_all_point[local]
+            shoulian_src[gidx] = pt
+            shoulian_dst[gidx] = pt
+
+    # Modify for selected faces
+    for face_idx in selected_faces:
+        p = face_params[face_idx]
+        base = face_idx * POINT_OFFSET
+        lm = cached_face_landmarks[face_idx]
+        face_all_point = get_points_all(lm.landmark, w_img, h_img)
+        local_dst = {local: shoulian_dst[base + local] for local in SHOULIAN_INDICES}
+        shoulian(p['SHOULIAN'], local_dst)
+        for local in SHOULIAN_INDICES:
+            shoulian_dst[base + local] = local_dst[local]
+
+    processed_image = warp_with_triangulation(image, shoulian_src, shoulian_dst)
+
+    if processed_image is None:
+        print("Error: Shoulian warp failed.")
+        if apply_bg_blur:
+            return bg_blur(image)
+        return image
+
+    # Second warp: other facial adjustments
+    src_points = corners_dict.copy()
+    dst_points = corners_dict.copy()
+
+    # Add boundary points for all faces (fixed initially)
+    for face_idx in range(num_faces):
+        base = face_idx * POINT_OFFSET
+        lm = cached_face_landmarks[face_idx]
+        face_all_point = get_points_all(lm.landmark, w_img, h_img)
+        for local in BOUNDARY:
+            gidx = base + local
+            pt = face_all_point[local]
+            src_points[gidx] = pt
+            dst_points[gidx] = pt
+
+    # Modify for selected faces
+    for face_idx in selected_faces:
+        p = face_params[face_idx]
+        base = face_idx * POINT_OFFSET
+        lm = cached_face_landmarks[face_idx]
+        face_all_point = get_points_all(lm.landmark, w_img, h_img)
+        local_dst = {local: dst_points[base + local] for local in BOUNDARY}
+        dayan(p['DAYAN'], local_dst)
+        quangu(p['QUANGU'] * p['ZHAILIAN'], local_dst)
+        biyi(p['BIYI'], local_dst)
+        longnose(p['LONGNOSE'], local_dst)
+        zhailian(p['ZHAILIAN'], local_dst)
+        renzhong(p['RENZHONG'], local_dst)
+        forehead(p['FOREHEAD'], local_dst)
+        zuijiao(p['ZUIJIAO'], local_dst)
+        dazui(p['DAZUI'], local_dst)
+        for local in BOUNDARY:
+            dst_points[base + local] = local_dst[local]
+
+    processed_image = warp_with_triangulation(processed_image, src_points, dst_points)
+
+    if processed_image is None:
+        print("Error: Facial adjustments warp failed.")
+        if apply_bg_blur:
+            return bg_blur(processed_image)
+        return processed_image
+
+    # Apply other filters sequentially for each selected face
+    for face_idx in selected_faces:
+        p = face_params[face_idx]
+        lm = cached_face_landmarks[face_idx]
+        all_2d = get_points_2D(lm.landmark, w_img, h_img)
+        hsv_image = cv2.cvtColor(processed_image, cv2.COLOR_BGR2HSV)
+        processed_image = apply_whitening_and_blend(
+            processed_image,
+            all_2d,
+            hsv_image,
+            H_DEFAULT, p['S'], p['V'], p['MOPI'],
+        )
+        processed_image = enhance_face_detail(processed_image, all_2d, strength_pct=p['DETAIL'])
+        processed_image = nasolabial_folds_filter(processed_image, all_2d, p['FALING'])
+        processed_image = black_filter(processed_image, all_2d, p['BLACK'])
+        processed_image = white_eyes(processed_image, all_2d, p['WHITE_EYE'])
+        processed_image = white_teeth(processed_image, all_2d, p['WHITE_TEETH'])
+        processed_image = apply_lipstick(processed_image, all_2d, p['LIPSTICK'])
+        processed_image = apply_blush(processed_image, all_2d, color=(157, 107, 255), intensity=p['BLUSH'])
+
+    if apply_bg_blur:
+        processed_image = bg_blur(processed_image)
+
+    return processed_image
+
+
+def update_image():
+    global image_path, bg_blur_enabled
+    image = cv2.imread(image_path)
+    if image is None:
+        error_label.config(text=f"Error: Could not load image at {image_path}")
+        return
+
+    h, w = image.shape[:2]
+    if w >= 1920 or h >= 1080:
+        image = cv2.resize(image, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
+
+    processed_image = process_image(
+        image,
+        selected_faces,
+        apply_bg_blur=bg_blur_enabled
+    )
+    if processed_image is None:
+        error_label.config(text="Error: Image processing failed.")
+        return
+
+    display_image = processed_image.copy()
+    display_image_rgb = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
+    display_image_pil = Image.fromarray(display_image_rgb)
+    display_image_tk = ImageTk.PhotoImage(display_image_pil)
+
+    image_label.config(image=display_image_tk)
+    image_label.image = display_image_tk
+    error_label.config(text="")
+    blur_button.config(text="取消模糊背景" if bg_blur_enabled else "模糊背景")
+
+
+def toggle_bg_blur():
+    global bg_blur_enabled
+    bg_blur_enabled = not bg_blur_enabled
+    update_image()
+
+
+def open_image():
+    global image_path, selected_faces, face_params, active_face
+    new_image_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png")])
+    if new_image_path:
+        image_path = new_image_path
+        # Reset selections
+        selected_faces = set()
+        face_params = {}
+        active_face = None
+        active_label.config(text="Editing: None")
+        # Load and run inference on the new image
+        image = cv2.imread(image_path)
+        if image is None:
+            error_label.config(text=f"Error: Could not load image at {image_path}")
+            return
+

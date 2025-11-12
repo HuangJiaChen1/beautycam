@@ -4,6 +4,7 @@ import numpy as np
 import tkinter as tk
 from tkinter import filedialog
 from PIL import Image, ImageTk
+from functools import lru_cache
 
 from affine_transformation import warp_with_triangulation
 from anti_faling import nasolabial_folds_filter
@@ -13,10 +14,11 @@ from dayan import dayan
 from dazui import dazui
 from forehead import forehead
 from long_nose import longnose
-from meibai import apply_whitening_and_blend
+from meibai import apply_whitening_and_blend, get_eye_mask
 from renzhong import renzhong
 from shoulian import shoulian
 from quangu import quangu
+from skin_segmenter import get_exposed_skin_mask
 from zhailian import zhailian
 from biyi import biyi
 from res import enhance_face_detail
@@ -27,9 +29,12 @@ from blush import apply_blush
 from zuijiao import zuijiao
 
 mp_face_mesh = mp.solutions.face_mesh
-EYE_INDICES = [374, 380, 390, 373, 249, 385, 384, 263, 466, 387, 386, 381, 382, 398, 388, 362, 154, 155, 33, 7, 246, 161, 159, 158, 144, 145, 173, 133, 157, 163, 153, 160]
-# BOUNDARY = [9,70,111,122,351,293,340]
-# 355,358,327,289,392,309,459,458,250,290 鼻子边缘，如需要从4开始粘贴
+mp_selfie_segmentation = mp.solutions.selfie_segmentation
+#TODO: MASK NEEDS TO TRANSFORM AS WELL
+
+# Constants
+EYE_INDICES = [374, 380, 390, 373, 249, 385, 384, 263, 466, 387, 386, 381, 382, 398, 388, 362, 154, 155, 33, 7, 246,
+               161, 159, 158, 144, 145, 173, 133, 157, 163, 153, 160]
 BOUNDARY = [270, 409, 317, 402, 81, 82, 91, 181, 37, 0, 84, 17, 269, 321, 375, 318, 324, 312, 311, 415, 308, 314, 61,
             146, 78, 95, 267, 13, 405, 178, 87, 185, 14, 88, 40, 291, 191, 310, 39, 80, #LIPS AND TEETH
 
@@ -48,182 +53,413 @@ BOUNDARY = [270, 409, 317, 402, 81, 82, 91, 181, 37, 0, 84, 17, 269, 321, 375, 3
 
             109,10,338,297,332,126,129,98,75,166,79,239,238,20,60,355,358,327,289,392,309,459,458,250,290,97,2,327,326,
             48,115,220,45,275,440,344,278,280,50,389,9,162]
-#BOUNDARY = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323,
-# 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,172, 58, 132, 93,234, 127, 162, 21, 54, 103, 67, 109, 10]
-SHOULIAN_INDICES = [132,58,172, 136, 150, 149, 176, 148,361,288,397, 365, 379, 378, 400,377,152,389,9,162
-                    ,33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246,
-                    263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]
-DAYAN_DEFAULT = 1
-SHOULIAN_DEFAULT = 1
-QUANGU_DEFAULT = 1
-ZHAILIAN_DEFAULT = 1
-RENZHONG_DEFAILT = 0
-BIYI_DEFAULT = 1
-FOREHEAD_DEFAULT = 0
-H_DEFAULT = 0
-S_DEFAULT = 0
-V_DEFAULT = 0
-MOPI_DEFAULT = 0
-FALING_DEFAULT = 0
-BLACK_DEFAULT = 0
-WHITE_EYE_DEFAULT = 1
-WHITE_TEETH_DEFAULT = 1
-LIPSTICK_DEFAULT = 0.0
-BLUSH_DEFAULT = 0.0
-LONGNOSE_DEFAULT = 0.0
-ZUIJIAO_DEFAULT = 0.0
-DAZUI_DEFAULT = 1
+SHOULIAN_INDICES = [234,93,132, 58, 172, 136, 150, 149, 176, 148,323,454, 361, 288, 397, 365, 379, 378, 400, 377, 152, 389, 9, 162,
+                    33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246, 263, 249, 390, 373,
+                    374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]
+
+POINT_OFFSET = 500
+
+# Debug flag: draw per-face ROI rectangles (easy to toggle off)
+ROI_DEBUG_DRAW = True
+
+defaults = {
+    'DAYAN': 1, 'SHOULIAN': 1, 'QUANGU': 1, 'ZHAILIAN': 1, 'RENZHONG': 0,
+    'BIYI': 1, 'LONGNOSE': 0.0, 'FOREHEAD': 0, 'ZUIJIAO': 0.0, 'DAZUI': 1,
+    'S': 0, 'V': 0, 'MOPI': 0, 'DETAIL': 0.0, 'FALING': 0, 'BLACK': 0,
+    'WHITE_EYE': 1, 'WHITE_TEETH': 1, 'LIPSTICK': 0.0, 'BLUSH': 0.0,
+}
+
+all_params = list(defaults.keys())
+
+cached_face_landmarks = None
+cached_segmentation_mask = None
+cached_image_shape = None
+cached_face_hulls = None
+cached_eye_lips = None
+selected_faces = set()
+face_params = {}
+shared_params = {'S': 0, 'V': 0, 'MOPI': 0}
+active_face = None
 bg_blur_enabled = False
+pending_update = None
 
-def get_points_all(image, landmarks):
-    points = [(landmarks[i].x, landmarks[i].y, landmarks[i].z+1) for i in range(len(landmarks))]
-    points_pixels = [transform_to_3d(int(p[0] * image.shape[1]), int(p[1] * image.shape[0]), p[2]) for p in points]
-    return points_pixels
+
 def transform_to_3d(x, y, z):
+    """Cached 3D transformation"""
     return (x * z, y * z, z)
-def get_points_2D(image, landmarks):
-    points = [(landmarks[i].x, landmarks[i].y) for i in range(len(landmarks))]
-    points_pixels = [(int(p[0] * image.shape[1]), int(p[1] * image.shape[0])) for p in points]
-    return points_pixels
 
-def process_image(image, DAYAN, SHOULIAN, QUANGU, BIYI, LONGNOSE, RENZHONG, ZHAILIAN, FOREHEAD,ZUIJIAO, DAZUI,
-                  H, S, V, MOPI, DETAIL, FALING, BLACK, WHITE_EYE, WHITE_TEETH, LIPSTICK, BLUSH, apply_bg_blur=False):
+
+def get_points_all(landmarks, width, height):
+    """Optimized point extraction with numpy"""
+    points = np.array([(lm.x * width, lm.y * height, lm.z + 1) for lm in landmarks])
+    return [(transform_to_3d(int(p[0]), int(p[1]), p[2])) for p in points]
+
+
+def get_points_2D(landmarks, width, height):
+    """Optimized 2D point extraction"""
+    return [(int(lm.x * width), int(lm.y * height)) for lm in landmarks]
+
+
+def compute_face_hulls(landmarks_list, w, h):
+    """Pre-compute convex hulls for all faces"""
+    hulls = []
+    for lm in landmarks_list:
+        all_2d = get_points_2D(lm.landmark, w, h)
+        pts = np.array(all_2d, dtype=np.int32)
+        if len(pts) >= 3:
+            hull = cv2.convexHull(pts)
+            hulls.append(hull)
+        else:
+            hulls.append(None)
+    return hulls
+
+
+def on_click(event):
+    """Optimized click handler using cached hulls"""
+    global selected_faces, face_params, active_face, cached_face_landmarks, cached_face_hulls
+
+    if not cached_face_landmarks or cached_image_shape is None:
+        return
+
+    h, w = cached_image_shape[:2]
+    cx, cy = event.x, event.y
+
+    # Check cached hulls first
+    for idx, hull in enumerate(cached_face_hulls):
+        if hull is None:
+            continue
+        dist = cv2.pointPolygonTest(hull, (int(cx), int(cy)), False)
+        if dist >= 0:
+            if idx not in selected_faces:
+                selected_faces.add(idx)
+                face_params[idx] = {k: v for k, v in defaults.items() if k not in ['S', 'V', 'MOPI']}
+            update_active_face(idx)
+            schedule_update()
+            return
+
+    # Fallback to nearest nose
+    min_dist = float('inf')
+    closest_idx = -1
+    for idx, lm in enumerate(cached_face_landmarks):
+        nose_x = int(lm.landmark[1].x * w)
+        nose_y = int(lm.landmark[1].y * h)
+        dist = (cx - nose_x) ** 2 + (cy - nose_y) ** 2
+        if dist < min_dist:
+            min_dist = dist
+            closest_idx = idx
+
+    if min_dist < 10000:  # 100^2
+        if closest_idx not in selected_faces:
+            selected_faces.add(closest_idx)
+            face_params[closest_idx] = {k: v for k, v in defaults.items() if k not in ['S', 'V', 'MOPI']}
+        update_active_face(closest_idx)
+        schedule_update()
+
+
+def run_model_inference(image):
+    """Run face mesh inference once"""
+    global cached_face_landmarks, cached_segmentation_mask, cached_image_shape, cached_face_hulls
+
     if image is None:
-        print("Error: Input image is None.")
-        return None
+        return None, None
 
+    cached_image_shape = image.shape
+    h, w = image.shape[:2]
+
+    # Face mesh inference
     with mp_face_mesh.FaceMesh(
             static_image_mode=True,
-            max_num_faces=1,
+            max_num_faces=5,
             refine_landmarks=True,
             min_detection_confidence=0.5) as face_mesh:
 
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(image_rgb)
+        face_results = face_mesh.process(image_rgb)
+        cached_face_landmarks = face_results.multi_face_landmarks if face_results.multi_face_landmarks else []
 
-        if not results.multi_face_landmarks:
-            print("No face landmarks detected.")
-            return image
-
-        for face_landmarks in results.multi_face_landmarks:
-            all_point = get_points_all(image, face_landmarks.landmark)
-            all_2d = get_points_2D(image, face_landmarks.landmark)
-            dst_points = {}
-            src_points = {}
-            for pts in BOUNDARY:
-                pt = all_point[pts]
-                src_points[pts] = pt
-                dst_points[pts] = pt
-            # print(dst_points)
-
-            '''
-            想要瘦脸时对脸部五官也进行收缩，目前我觉得好像只能做两次affine了，
-            把瘦脸单独拎出来，不pass boundaries，做完affine再apply别的变换
-            
-            还有没有可能只做一次affine呢？如果我在瘦脸时把五官landmark也传入
-            的话可行吗？会不会要对各个五官做单独变换？可是即使是这样，瘦脸单独做
-            affine一定是最自然的
-            '''
-            shoulian_dst_pts = {}
-            shoulian_src_pts = {}
-            for pts in SHOULIAN_INDICES:
-                pt = all_point[pts]
-                shoulian_dst_pts[pts] = pt
-                shoulian_src_pts[pts] = pt
-            shoulian(SHOULIAN, shoulian_dst_pts)
-            processed_image = warp_with_triangulation(image,shoulian_src_pts,shoulian_dst_pts)
-            # 以上是做2次affine
-
-            dayan(DAYAN, dst_points)
-            quangu(QUANGU*ZHAILIAN, dst_points)
-            biyi(BIYI, dst_points)
-            longnose(LONGNOSE, dst_points)
-            zhailian(ZHAILIAN, dst_points)
-            renzhong(RENZHONG, dst_points)
-            forehead(FOREHEAD, dst_points)
-            zuijiao(ZUIJIAO, dst_points)
-            dazui(DAZUI, dst_points)
-            processed_image = warp_with_triangulation(processed_image, src_points, dst_points)
-            # print(dst_points)
+    # Pre-compute convex hulls
+    if cached_face_landmarks:
+        cached_face_hulls = compute_face_hulls(cached_face_landmarks, w, h)
+    else:
+        cached_face_hulls = []
+    all_masks = get_exposed_skin_mask(image_rgb)
+    cached_segmentation_mask = all_masks
+    return cached_face_landmarks, cached_segmentation_mask
 
 
-            if processed_image is None:
-                print("Error: Warp with triangulation failed.")
-                return image
+def process_image(image, selected_faces, apply_bg_blur=False):
+    """Optimized image processing pipeline"""
+    global cached_face_landmarks, face_params
 
-            processed_image = apply_whitening_and_blend(
-                processed_image,
-                all_2d,
-                cv2.cvtColor(processed_image, cv2.COLOR_BGR2HSV),
-                H, S, V, MOPI,
+    if image is None or not cached_face_landmarks or not selected_faces:
+        return bg_blur(image) if apply_bg_blur else image
 
-            )
-            processed_image = enhance_face_detail(processed_image, all_2d, strength_pct=DETAIL)
-            processed_image = nasolabial_folds_filter(processed_image,all_2d, FALING)
-            processed_image = black_filter(processed_image,all_2d, BLACK)
-            processed_image = white_eyes(processed_image, all_2d,WHITE_EYE)
-            processed_image = white_teeth(processed_image,all_2d, WHITE_TEETH)
-            processed_image = apply_lipstick(processed_image, all_2d, LIPSTICK)
-            processed_image = apply_blush(processed_image,all_2d, color=(157, 107, 255), intensity=BLUSH)
+    h_img, w_img = image.shape[:2]
+    num_faces = len(cached_face_landmarks)
 
-            if apply_bg_blur:
-                processed_image = bg_blur(processed_image)
+    # Corner points setup
+    corner_indices = [-1, -2, -3, -4]
+    corner_points = [
+        transform_to_3d(0, 0, 1),
+        transform_to_3d(w_img - 1, 0, 1),
+        transform_to_3d(w_img - 1, h_img - 1, 1),
+        transform_to_3d(0, h_img - 1, 1)
+    ]
+    corners_dict = dict(zip(corner_indices, corner_points))
 
-        return processed_image
+    # Pre-compute all face points once
+    all_face_points = [get_points_all(lm.landmark, w_img, h_img) for lm in cached_face_landmarks]
+    # Apply filters (batch HSV conversion)
+    hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    eye_mask = np.zeros((hsv_image.shape[0], hsv_image.shape[1]), np.uint8)
+    # processed_image = image.copy()
+    for face_idx in selected_faces:
+        all_2d = get_points_2D(cached_face_landmarks[face_idx].landmark, w_img, h_img)
+        eye_mask_per_face = get_eye_mask(image,all_2d)
+        eye_mask = cv2.bitwise_or(eye_mask, eye_mask_per_face)
+    processed_image = apply_whitening_and_blend(image, eye_mask, cached_segmentation_mask, hsv_image, 0, shared_params['S'],
+                                                shared_params['V'], shared_params['MOPI'])
+
+    for face_idx in selected_faces:
+        p = face_params[face_idx]
+        all_2d = get_points_2D(cached_face_landmarks[face_idx].landmark, w_img, h_img)
+        eye_mask_per_face = get_eye_mask(image,all_2d)
+        eye_mask = cv2.bitwise_or(eye_mask, eye_mask_per_face)
+
+        if p['DETAIL'] > 0:
+            processed_image = enhance_face_detail(processed_image, all_2d, strength_pct=p['DETAIL'])
+        if p['FALING'] > 0:
+            processed_image = nasolabial_folds_filter(processed_image, all_2d, p['FALING'])
+        if p['BLACK'] > 0:
+            processed_image = black_filter(processed_image, all_2d, p['BLACK'])
+        if p['WHITE_EYE'] != 1:
+            processed_image = white_eyes(processed_image, all_2d, p['WHITE_EYE'])
+        if p['WHITE_TEETH'] != 1:
+            processed_image = white_teeth(processed_image, all_2d, p['WHITE_TEETH'])
+        if p['LIPSTICK'] > 0:
+            processed_image = apply_lipstick(processed_image, all_2d, p['LIPSTICK'])
+        if p['BLUSH'] > 0:
+            processed_image = apply_blush(processed_image, all_2d, color=(157, 107, 255), intensity=p['BLUSH'])
+
+
+    # Compute per-face ROI from enlarged face hulls (based on hull area)
+    face_rois = {}
+    if cached_face_hulls is not None:
+        for face_idx in selected_faces:
+            if face_idx < len(cached_face_hulls) and cached_face_hulls[face_idx] is not None:
+                hull = cached_face_hulls[face_idx]
+                area = max(cv2.contourArea(hull), 1.0)
+                x, y, w, h = cv2.boundingRect(hull)
+                # padding in pixels based on face hull area
+                pad = int(max(8, 0.10 * np.sqrt(area)))
+                rx = max(0, int(x - 2*pad))
+                ry = max(0, y - pad)
+                rx2 = min(w_img - 1, int(x + w + 2*pad))
+                ry2 = min(h_img - 1, y + h + pad)
+                rw = rx2 - rx + 1
+                rh = ry2 - ry + 1
+                # ensure valid ROI
+                if rw > 2 and rh > 2:
+                    face_rois[face_idx] = (rx, ry, rw, rh)
+
+    def _proj2d(p3):
+        z = p3[2]
+        if z != 0:
+            return (p3[0] / z, p3[1] / z)
+        return (p3[0], p3[1])
+
+    # First warp: shoulian
+    shoulian_src = corners_dict.copy()
+    shoulian_dst = corners_dict.copy()
+
+    for face_idx in range(num_faces):
+        base = face_idx * POINT_OFFSET
+        face_all_point = all_face_points[face_idx]
+        for local in SHOULIAN_INDICES:
+            gidx = base + local
+            pt = face_all_point[local]
+            shoulian_src[gidx] = pt
+            shoulian_dst[gidx] = pt
+
+    for face_idx in selected_faces:
+        p = face_params[face_idx]
+        base = face_idx * POINT_OFFSET
+        local_dst = {local: shoulian_dst[base + local] for local in SHOULIAN_INDICES}
+        shoulian(p['SHOULIAN'], local_dst)
+        for local in SHOULIAN_INDICES:
+            shoulian_dst[base + local] = local_dst[local]
+
+    # ROI-scoped warping per selected face
+    for face_idx in selected_faces:
+        if face_idx not in face_rois:
+            continue
+        rx, ry, rw, rh = face_rois[face_idx]
+        roi_img = processed_image[ry:ry + rh, rx:rx + rw]
+
+        # Build ROI-local point maps for this face
+        roi_src = {}
+        roi_dst = {}
+        # ROI corners
+        roi_corners = [
+            (0, 0), (rw - 1, 0), (rw - 1, rh - 1), (0, rh - 1)
+        ]
+        corner_indices = [-1, -2, -3, -4]
+        for idx, (cx, cy) in zip(corner_indices, roi_corners):
+            roi_src[idx] = transform_to_3d(int(cx), int(cy), 1)
+            roi_dst[idx] = transform_to_3d(int(cx), int(cy), 1)
+
+        base = face_idx * POINT_OFFSET
+        for local in SHOULIAN_INDICES:
+            gidx = base + local
+            s2d = _proj2d(shoulian_src[gidx])
+            d2d = _proj2d(shoulian_dst[gidx])
+            roi_src[gidx] = transform_to_3d(int(s2d[0] - rx), int(s2d[1] - ry), shoulian_src[gidx][2])
+            roi_dst[gidx] = transform_to_3d(int(d2d[0] - rx), int(d2d[1] - ry), shoulian_dst[gidx][2])
+
+        warped_roi = warp_with_triangulation(roi_img, roi_src, roi_dst)
+        if warped_roi is not None:
+            processed_image[ry:ry + rh, rx:rx + rw] = warped_roi
+        else:
+            return bg_blur(image) if apply_bg_blur else image
+
+    # Second warp: facial adjustments
+    src_points = corners_dict.copy()
+    dst_points = corners_dict.copy()
+
+    for face_idx in range(num_faces):
+        base = face_idx * POINT_OFFSET
+        face_all_point = all_face_points[face_idx]
+        for local in BOUNDARY:
+            gidx = base + local
+            pt = face_all_point[local]
+            src_points[gidx] = pt
+            dst_points[gidx] = pt
+
+    for face_idx in selected_faces:
+        p = face_params[face_idx]
+        base = face_idx * POINT_OFFSET
+        local_dst = {local: dst_points[base + local] for local in BOUNDARY}
+
+        # Apply all transformations
+        dayan(p['DAYAN'], local_dst)
+        quangu(p['QUANGU'] * p['ZHAILIAN'], local_dst)
+        biyi(p['BIYI'], local_dst)
+        longnose(p['LONGNOSE'], local_dst)
+        zhailian(p['ZHAILIAN'], local_dst)
+        renzhong(p['RENZHONG'], local_dst)
+        forehead(p['FOREHEAD'], local_dst)
+        zuijiao(p['ZUIJIAO'], local_dst)
+        dazui(p['DAZUI'], local_dst)
+
+        for local in BOUNDARY:
+            dst_points[base + local] = local_dst[local]
+
+    # ROI-scoped warping per selected face for facial adjustments
+    for face_idx in selected_faces:
+        if face_idx not in face_rois:
+            continue
+        rx, ry, rw, rh = face_rois[face_idx]
+        roi_img = processed_image[ry:ry + rh, rx:rx + rw]
+
+        roi_src = {}
+        roi_dst = {}
+        roi_corners = [
+            (0, 0), (rw - 1, 0), (rw - 1, rh - 1), (0, rh - 1)
+        ]
+        corner_indices = [-1, -2, -3, -4]
+        for idx, (cx, cy) in zip(corner_indices, roi_corners):
+            roi_src[idx] = transform_to_3d(int(cx), int(cy), 1)
+            roi_dst[idx] = transform_to_3d(int(cx), int(cy), 1)
+
+        base = face_idx * POINT_OFFSET
+        for local in BOUNDARY:
+            gidx = base + local
+            s2d = _proj2d(src_points[gidx])
+            d2d = _proj2d(dst_points[gidx])
+            roi_src[gidx] = transform_to_3d(int(s2d[0] - rx), int(s2d[1] - ry), src_points[gidx][2])
+            roi_dst[gidx] = transform_to_3d(int(d2d[0] - rx), int(d2d[1] - ry), dst_points[gidx][2])
+
+        warped_roi = warp_with_triangulation(roi_img, roi_src, roi_dst)
+        if warped_roi is not None:
+            processed_image[ry:ry + rh, rx:rx + rw] = warped_roi
+        else:
+            return processed_image
+
+
+    if apply_bg_blur:
+        processed_image = bg_blur(processed_image)
+
+    # Debug: visualize ROI size on the image
+    if 'face_rois' in locals() and face_rois and ROI_DEBUG_DRAW:
+        for idx, (rx, ry, rw, rh) in face_rois.items():
+            cv2.rectangle(processed_image, (rx, ry), (rx + rw - 1, ry + rh - 1), (0, 255, 255), 2)
+            label = f"{rw}x{rh}"
+            ty = max(ry - 6, 0)
+            cv2.putText(processed_image, label, (rx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+
+    return processed_image
+
+
+def schedule_update():
+    """Debounce updates to avoid excessive reprocessing"""
+    global pending_update
+    if pending_update:
+        root.after_cancel(pending_update)
+    pending_update = root.after(5, update_image)  # 50ms debounce
+
+
+def set_param(param, val):
+    """Set parameter for active face"""
+    if param in ['S', 'V', 'MOPI']:
+        shared_params[param] = val
+    elif active_face is not None:
+        face_params[active_face][param] = val
+
+
+def make_slider_command(param):
+    """Create slider callback with debouncing"""
+
+    def cmd(val):
+        set_param(param, float(val))
+        schedule_update()
+
+    return cmd
+
+
+def update_active_face(idx):
+    """Update UI to reflect active face"""
+    global active_face
+    active_face = idx
+    active_label.config(text=f"Editing face {idx + 1}")
+    for p in all_params:
+        if p in ['S', 'V', 'MOPI']:
+            val = shared_params[p]
+        else:
+            val = face_params[idx][p]
+        param_to_var[p].set(val)
 
 
 def update_image():
-    global image_path, bg_blur_enabled
+    """Update displayed image"""
+    global image_path, bg_blur_enabled, pending_update
+    pending_update = None
+
     image = cv2.imread(image_path)
     if image is None:
-        error_label.config(text=f"Error: Could not load image at {image_path}")
+        error_label.config(text=f"Error: Could not load image")
         return
 
-
     h, w = image.shape[:2]
-    # print(h,w)
-    # image = cv2.resize(image, (int(w*0.8), int(h*0.8)))
     if w >= 1920 or h >= 1080:
-        image = cv2.resize(image, (w//2, h//2), interpolation=cv2.INTER_AREA)
-    processed_image = process_image(
-        image,
-        DAYAN_var.get(),
-        SHOULIAN_var.get(),
-        QUANGU_var.get(),
-        BIYI_var.get(),
-        LONGNOSE_var.get(),
-        RENZHONG_var.get(),
-        ZHAILIAN_var.get(),
-        FOREHEAD_var.get(),
-        ZUIJIAO_var.get(),
-        DAZUI_var.get(),
-        H_DEFAULT,
-        S_var.get(),
-        V_var.get(),
-        MOPI_var.get(),
-        DETAIL_var.get(),
-        FALING_var.get(),
-        BLACK_var.get(),
-        WHITE_EYE_var.get(),
-        WHITE_TEETH_var.get(),
-        LIPSTICK_var.get(),
-        BLUSH_var.get(),
-        apply_bg_blur=bg_blur_enabled
-    )
+        image = cv2.resize(image, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
+
+    processed_image = process_image(image, selected_faces, apply_bg_blur=bg_blur_enabled)
     if processed_image is None:
         error_label.config(text="Error: Image processing failed.")
         return
 
-
-    display_image = processed_image.copy()
-    # max_size = (500, 500)
-    # h, w = display_image.shape[:2]
-    # scale = min(max_size[0] / w, max_size[1] / h)
-    # if scale < 1:
-    #     new_w, new_h = int(w * scale), int(h * scale)
-    #     display_image = cv2.resize(display_image, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-    display_image_rgb = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
+    # Convert and display
+    display_image_rgb = cv2.cvtColor(processed_image, cv2.COLOR_BGR2RGB)
     display_image_pil = Image.fromarray(display_image_rgb)
     display_image_tk = ImageTk.PhotoImage(display_image_pil)
 
@@ -234,190 +470,147 @@ def update_image():
 
 
 def toggle_bg_blur():
+    """Toggle background blur"""
     global bg_blur_enabled
     bg_blur_enabled = not bg_blur_enabled
     update_image()
 
 
 def open_image():
-    global image_path
+    """Open new image and run inference"""
+    global image_path, selected_faces, face_params, active_face
+
     new_image_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png")])
-    if new_image_path:
-        image_path = new_image_path
-        update_image()
+    if not new_image_path:
+        return
+
+    image_path = new_image_path
+    selected_faces = set()
+    face_params = {}
+    active_face = None
+    active_label.config(text="Editing: None")
+
+    image = cv2.imread(image_path)
+    if image is None:
+        error_label.config(text=f"Error: Could not load image")
+        return
+
+    h, w = image.shape[:2]
+    if w >= 1920 or h >= 1080:
+        image = cv2.resize(image, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
+
+    run_model_inference(image)
+
+    for i in range(len(cached_face_landmarks)):
+        selected_faces.add(i)
+        face_params[i] = {k: v for k, v in defaults.items() if k not in ['S', 'V', 'MOPI']}
+        update_active_face(i)
+
+    update_image()
 
 
 def save_image():
+    """Save processed image"""
     global image_path, bg_blur_enabled
+
     image = cv2.imread(image_path)
     if image is None:
-        error_label.config(text=f"Error: Could not load image at {image_path}")
+        error_label.config(text=f"Error: Could not load image")
         return
 
-    processed_image = process_image(
-        image,
-        DAYAN_var.get(),
-        SHOULIAN_var.get(),
-        QUANGU_var.get(),
-        BIYI_var.get(),
-        LONGNOSE_var.get(),
-        RENZHONG_var.get(),
-        ZHAILIAN_var.get(),
-        FOREHEAD_var.get(),
-        ZUIJIAO_var.get(),
-        DAZUI_var.get(),
-        H_DEFAULT,
-        S_var.get(),
-        V_var.get(),
-        MOPI_var.get(),
-        DETAIL_var.get(),
-        FALING_var.get(),
-        BLACK_var.get(),
-        WHITE_EYE_var.get(),
-        WHITE_TEETH_var.get(),
-        LIPSTICK_var.get(),
-        BLUSH_var.get(),
-        apply_bg_blur=bg_blur_enabled
-    )
+    h, w = image.shape[:2]
+    if w >= 1920 or h >= 1080:
+        image = cv2.resize(image, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
+
+    processed_image = process_image(image, selected_faces, apply_bg_blur=bg_blur_enabled)
     if processed_image is None:
         error_label.config(text="Error: Image processing failed.")
         return
 
     base_name = image_path.split('/')[-1].split('.')[0]
     blur_suffix = "_blur" if bg_blur_enabled else ""
-    filename = f"{base_name}_D{DAYAN_var.get():.2f}_S{SHOULIAN_var.get():.2f}_S{S_var.get():.2f}_V{V_var.get():.2f}_M{MOPI_var.get():.1f}{blur_suffix}.jpg"
+    filename = f"{base_name}{blur_suffix}.jpg"
 
     cv2.imwrite(filename, processed_image)
     error_label.config(text=f"Image saved as {filename}")
 
 
-
+# UI Setup
 root = tk.Tk()
 root.title("美颜算法")
 
 image_path = 'imgs/face4.jpg'
+
+# Image frame
 image_frame = tk.Frame(root)
 image_frame.pack(side=tk.LEFT, padx=10, pady=10)
 image_label = tk.Label(image_frame)
 image_label.pack()
+image_label.bind("<Button-1>", on_click)
 error_label = tk.Label(image_frame, text="", fg="red")
 error_label.pack()
 
+# Control frame
 control_frame = tk.Frame(root)
 control_frame.pack(side=tk.RIGHT, padx=10, pady=10)
-control_frame.grid_columnconfigure(0, weight=1)
-control_frame.grid_columnconfigure(1, weight=1)
-control_frame.grid_columnconfigure(2, weight=1)
+for i in range(3):
+    control_frame.grid_columnconfigure(i, weight=1)
 
-DAYAN_var = tk.DoubleVar(value=DAYAN_DEFAULT)
-SHOULIAN_var = tk.DoubleVar(value=SHOULIAN_DEFAULT)
-ZHAILIAN_var = tk.DoubleVar(value=ZHAILIAN_DEFAULT)
-FOREHEAD_var = tk.DoubleVar(value=FOREHEAD_DEFAULT)
-RENZHONG_var = tk.DoubleVar(value=RENZHONG_DEFAILT)
-QUANGU_var = tk.DoubleVar(value=QUANGU_DEFAULT)
-BIYI_var = tk.DoubleVar(value=BIYI_DEFAULT)
-LONGNOSE_var = tk.DoubleVar(value=LONGNOSE_DEFAULT)
-DETAIL_var = tk.DoubleVar(value=0)
-# H_var = tk.DoubleVar(value=H_DEFAULT)
-S_var = tk.DoubleVar(value=S_DEFAULT)
-V_var = tk.DoubleVar(value=V_DEFAULT)
-MOPI_var = tk.DoubleVar(value=MOPI_DEFAULT)
-FALING_var = tk.DoubleVar(value=FALING_DEFAULT)
-BLACK_var = tk.DoubleVar(value=BLACK_DEFAULT)
-WHITE_EYE_var = tk.DoubleVar(value=WHITE_EYE_DEFAULT)
-WHITE_TEETH_var = tk.DoubleVar(value=WHITE_TEETH_DEFAULT)
-LIPSTICK_var = tk.DoubleVar(value=LIPSTICK_DEFAULT)
-BLUSH_var = tk.DoubleVar(value=BLUSH_DEFAULT)
-ZUIJIAO_var = tk.DoubleVar(value=ZUIJIAO_DEFAULT)
-DAZUI_var = tk.DoubleVar(value=DAZUI_DEFAULT)
+# Create all slider variables
+param_to_var = {param: tk.DoubleVar(value=defaults[param]) for param in all_params}
 
+slider_config = [
+    ("大眼", 'DAYAN', 1.0, 1.1, 0.01, 0, 0),
+    ("瘦脸", 'SHOULIAN', 0.95, 1.0, 0.005, 0, 1),
+    ("颧骨", 'QUANGU', 0.95, 1.0, 0.005, 0, 2),
+    ("人中", 'RENZHONG', -3.0, 3.0, 0.005, 1, 2),
+    ("额头", 'FOREHEAD', -5.0, 5.0, 0.005, 2, 2),
+    ("窄脸", 'ZHAILIAN', 0.95, 1.0, 0.005, 1, 0),
+    ("鼻翼", 'BIYI', 0.9, 1.1, 0.005, 1, 1),
+    ("长鼻", 'LONGNOSE', -2.0, 2.0, 0.005, 2, 1),
+    ("嘴角", 'ZUIJIAO', 0.0, 3.0, 0.005, 2, 0),
+    ("大嘴", 'DAZUI', 0.9, 1.1, 0.005, 3, 2),
+    ("美白", 'S', 0.0, 0.08, 0.002, 3, 0),
+    ("磨皮", 'MOPI', 0, 0.5, 0.01, 5, 0),
+    ("细节增强", 'DETAIL', 0, 50, 1, 5, 1),
+    ("去法令纹", 'FALING', 0, 1, 0.02, 6, 0),
+    ("去黑眼圈", 'BLACK', 0, 1, 0.02, 6, 1),
+    ("亮眼", 'WHITE_EYE', 1, 1.2, 0.02, 7, 0),
+    ("亮牙", 'WHITE_TEETH', 1, 1.2, 0.01, 7, 1),
+    ("口红", 'LIPSTICK', 0.0, 0.25, 0.01, 8, 0),
+    ("腮红", 'BLUSH', 0.0, 1, 0.05, 8, 1),
+]
 
-tk.Scale(control_frame, from_=1.0, to=1.1, resolution=0.01, orient=tk.HORIZONTAL, label="大眼", variable=DAYAN_var,
-         command=lambda x: update_image()).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=0.95, to=1.0, resolution=0.005, orient=tk.HORIZONTAL, label="瘦脸", variable=SHOULIAN_var,
-         command=lambda x: update_image()).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=0.95, to=1.0, resolution=0.005, orient=tk.HORIZONTAL, label="颧骨", variable=QUANGU_var,
-         command=lambda x: update_image()).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=-3.0, to=3.0, resolution=0.005, orient=tk.HORIZONTAL, label="人中", variable=RENZHONG_var,
-         command=lambda x: update_image()).grid(row=1, column=2, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=-5.0, to=5.0, resolution=0.005, orient=tk.HORIZONTAL, label="额头", variable=FOREHEAD_var,
-         command=lambda x: update_image()).grid(row=2, column=2, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=0.95, to=1.0, resolution=0.005, orient=tk.HORIZONTAL, label="窄脸", variable=ZHAILIAN_var,
-         command=lambda x: update_image()).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=0.9, to=1.1, resolution=0.005, orient=tk.HORIZONTAL, label="鼻翼", variable=BIYI_var,
-         command=lambda x: update_image()).grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=-2.0, to=2.0, resolution=0.005, orient=tk.HORIZONTAL, label="长鼻", variable=LONGNOSE_var,
-         command=lambda x: update_image()).grid(row=2, column=1, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=0.0, to=3.0, resolution=0.005, orient=tk.HORIZONTAL, label="嘴角", variable=ZUIJIAO_var,
-         command=lambda x: update_image()).grid(row=2, column=0, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame, from_=0.9, to=1.1, resolution=0.005, orient=tk.HORIZONTAL, label="大嘴", variable=DAZUI_var,
-         command=lambda x: update_image()).grid(row=3, column=2, padx=5, pady=5, sticky="ew")
-# tk.Scale(control_frame, from_=0.0, to=1.0, resolution=0.05, orient=tk.HORIZONTAL, label="H", variable=H_var,
-#          command=lambda x: update_image()).pack(padx=5, pady=5)
-# text = tk.StringVar(value="调整S，V来调整美白和冷暖\nS不宜超过0.20，V不宜超过0.10")
-# tk.Label(control_frame, textvariable=text, font=("Arial", 9)).grid(row=2, column=0, columnspan=2, padx=5, sticky="w")
-tk.Scale(control_frame, from_=0.0, to=0.08, resolution=0.002, orient=tk.HORIZONTAL, label="美白", variable=S_var,
-         command=lambda x: update_image()).grid(row=3, column=0, padx=5, pady=5, sticky="ew")
-# tk.Scale(control_frame, from_=0.0, to=0.03, resolution=0.002, orient=tk.HORIZONTAL, label="V", variable=V_var,
-#          command=lambda x: update_image()).grid(row=3, column=1, padx=5, pady=5, sticky="ew")
-# text = tk.StringVar(value="根据美图秀秀，其磨皮拉满约等于这\n里数值0.30，因此不宜超过0.30")
-# tk.Label(control_frame, textvariable=text, font=("Arial", 9)).grid(row=4, column=0, columnspan=2, padx=5, sticky="w")
-tk.Scale(control_frame, from_=0, to=0.5, resolution=0.01, orient=tk.HORIZONTAL, label="磨皮", variable=MOPI_var,
-         command=lambda x: update_image()).grid(row=5, column=0, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame,
-         from_=0, to=50, resolution=1,
-         orient=tk.HORIZONTAL,
-         label="细节增强",
-         variable=DETAIL_var,
-         command=lambda x: update_image()).grid(row=5, column=1, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame,
-         from_=0, to=1, resolution=0.02,
-         orient=tk.HORIZONTAL,
-         label="去法令纹",
-         variable=FALING_var,
-         command=lambda x: update_image()).grid(row=6, column=0, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame,
-         from_=0, to=1, resolution=0.02,
-         orient=tk.HORIZONTAL,
-         label="去黑眼圈",
-         variable=BLACK_var,
-         command=lambda x: update_image()).grid(row=6, column=1, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame,
-         from_=1, to=1.2, resolution=0.02,
-         orient=tk.HORIZONTAL,
-         label="亮眼",
-         variable=WHITE_EYE_var,
-         command=lambda x: update_image()).grid(row=7, column=0, padx=5, pady=5, sticky="ew")
-tk.Scale(control_frame,
-         from_=1, to=1.2, resolution=0.01,
-         orient=tk.HORIZONTAL,
-         label="亮牙",
-         variable=WHITE_TEETH_var,
-         command=lambda x: update_image()).grid(row=7, column=1, padx=5, pady=5, sticky="ew")
+for label, param, from_, to_, res, row, col in slider_config:
+    tk.Scale(control_frame, from_=from_, to=to_, resolution=res, orient=tk.HORIZONTAL,
+             label=label, variable=param_to_var[param],
+             command=make_slider_command(param)).grid(row=row, column=col, padx=5, pady=5, sticky="ew")
 
-tk.Scale(control_frame,
-         from_=0.0, to=0.5, resolution=0.01,
-         orient=tk.HORIZONTAL,
-         label="口红",
-         variable=LIPSTICK_var,
-         command=lambda x: update_image()).grid(row=8, column=0, padx=5, pady=5, sticky="ew")
-
-tk.Scale(control_frame,
-         from_=0.0, to=1, resolution=0.05,
-         orient=tk.HORIZONTAL,
-         label="腮红",
-         variable=BLUSH_var,
-         command=lambda x: update_image()).grid(row=8, column=1, padx=5, pady=5, sticky="ew")
+# Status and buttons
+active_label = tk.Label(control_frame, text="Editing: None", font=("Arial", 12, "bold"))
+active_label.grid(row=9, column=0, columnspan=3, pady=5)
 
 open_button = tk.Button(control_frame, text="打开图片", command=open_image)
-open_button.grid(row=9, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+open_button.grid(row=10, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
 
-blur_button = tk.Button(control_frame, text="模糊背景", command=toggle_bg_blur, bg="#4CAF50", fg="white",
-                        font=("Arial", 10, "bold"))
-blur_button.grid(row=10, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+blur_button = tk.Button(control_frame, text="模糊背景", command=toggle_bg_blur,
+                        bg="#4CAF50", fg="white", font=("Arial", 10, "bold"))
+blur_button.grid(row=11, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
 
 save_button = tk.Button(control_frame, text="保存图片", command=save_image)
-save_button.grid(row=11, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+save_button.grid(row=12, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+
+# Initialize
+initial_image = cv2.imread(image_path)
+if initial_image is not None:
+    h, w = initial_image.shape[:2]
+    if w >= 1920 or h >= 1080:
+        initial_image = cv2.resize(initial_image, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
+    run_model_inference(initial_image)
+    for i in range(len(cached_face_landmarks)):
+        selected_faces.add(i)
+        face_params[i] = {k: v for k, v in defaults.items() if k not in ['S', 'V', 'MOPI']}
+        update_active_face(i)
 
 update_image()
 root.mainloop()

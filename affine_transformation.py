@@ -94,3 +94,24 @@ def warp_with_triangulation(image, source_points, scaled_points):
     warped_eye = warp_image_piecewise_affine(image, src_all, dst_all)
 
     return warped_eye
+
+
+def _project_points_dict_to_2d(points_dict, indices):
+    src = []
+    for idx in indices:
+        p = points_dict[idx]
+        x, y = project_to_2d(p)
+        src.append([x, y])
+    return np.asarray(src, dtype=np.float32)
+
+
+def _compute_roi_from_points(points, padding, W, H):
+    if points.shape[0] == 0:
+        return 0, 0, W, H
+    xs = points[:, 0]
+    ys = points[:, 1]
+    x0 = max(int(np.floor(xs.min())) - padding, 0)
+    y0 = max(int(np.floor(ys.min())) - padding, 0)
+    x1 = min(int(np.ceil(xs.max())) + padding, W - 1)
+    y1 = min(int(np.ceil(ys.max())) + padding, H - 1)
+    return x0, y0, x1 - x0 + 1, y1 - y0 + 1

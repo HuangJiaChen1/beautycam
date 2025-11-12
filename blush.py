@@ -35,7 +35,11 @@ def apply_blush_to_region(image, landmarks, indices, color, intensity):
     dist = np.sqrt((xx - center_x) ** 2 + (yy - center_y) ** 2)
     mask_local = np.clip(1 - (dist / max(radius, 1)), 0, 1)
     mask_local = (mask_local ** 2) * float(intensity)
-    mask_local = cv2.GaussianBlur(mask_local.astype(np.float32), (99, 99), 0)
+    if radius %2 == 1:
+        ksize = radius
+    else:
+        ksize = radius + 1
+    mask_local = cv2.GaussianBlur(mask_local.astype(np.float32), (ksize, ksize), 0)
 
     blush_overlay = np.zeros((y2 - y1, x2 - x1, 3), dtype=np.float32)
     blush_overlay[:] = color
@@ -51,7 +55,12 @@ def apply_blush_to_region(image, landmarks, indices, color, intensity):
     dist_h = np.sqrt((xx2 - center_x) ** 2 + (yy2 - hc_y) ** 2)
     h_mask = np.clip(1 - (dist_h / max(h_radius, 1)), 0, 1)
     h_mask = (h_mask ** 2) * float(intensity) * 0.2
-    h_mask = cv2.GaussianBlur(h_mask.astype(np.float32), (51, 51), 0)
+    ksize = int(ksize / 2)
+    if ksize %2 == 1:
+        pass
+    else:
+        ksize += 1
+    h_mask = cv2.GaussianBlur(h_mask.astype(np.float32), (ksize, ksize), 0)
     blush_effect += np.repeat(h_mask[..., None], 3, axis=2) * 30
 
     out = image.copy().astype(np.float32)

@@ -66,11 +66,8 @@ def is_mouth_open(landmarks, threshold_ratio=0.08):
     if teeth_width == 0:
         return False
 
-    # Calculate aspect ratio (height/width)
-    # When mouth is closed, this ratio will be very small (narrow in y-direction)
     aspect_ratio = teeth_height / teeth_width
 
-    # If aspect ratio is above threshold, mouth is open
     return aspect_ratio > threshold_ratio
 
 
@@ -99,12 +96,29 @@ def lipstick(image, landmarks, strength=1.0, color=(255, 20, 20)):
 
         lip_mask = np.zeros((h, w), dtype=np.uint8)
         cv2.fillPoly(lip_mask, [lips_pts], 255)
-        lip_mask = cv2.GaussianBlur(lip_mask, (51, 51), 0)
+        # img = image.copy()
+        # img[lip_mask == 0] = 0
+        # cv2.imshow('lips', img)
+        # lip_mask = cv2.GaussianBlur(lip_mask, (31, 31), 0)
         teeth_mask = np.zeros((h, w), dtype=np.uint8)
         cv2.fillPoly(teeth_mask, [teeth_pts], 255)
-        cv2.dilate(teeth_mask, np.ones((3, 3), np.uint8), iterations=1)
+        teeth_mask = cv2.erode(teeth_mask, np.ones((3, 3), np.uint8))
+        # img = image.copy()
+        # img[teeth_mask == 0] = 0
+        # cv2.imshow('teet', img)
+        # cv2.waitKey(0)
 
         mask = cv2.bitwise_and(lip_mask, cv2.bitwise_not(teeth_mask))
+
+        area = cv2.countNonZero(mask)
+        if area > 0:
+            ksize_base = int(np.sqrt(area) / 5)
+            ksize = max(1, 2 * (ksize_base // 2) + 1)
+        else:
+            ksize = 7
+
+
+        mask = cv2.GaussianBlur(mask, (ksize, ksize), 0)
     else:
         # For closed mouth: use closed contour that fills the gap
         closed_contour = create_closed_lip_contour(landmarks)
@@ -112,8 +126,15 @@ def lipstick(image, landmarks, strength=1.0, color=(255, 20, 20)):
         mask = np.zeros((h, w), dtype=np.uint8)
         cv2.fillPoly(mask, [closed_contour], 255)
 
-        # Apply Gaussian blur for smooth edges
-        mask = cv2.GaussianBlur(mask, (51, 51), 0)
+
+        area = cv2.countNonZero(mask)
+        if area > 0:
+            ksize_base = int(np.sqrt(area) / 5)
+            ksize = max(1, 2 * (ksize_base // 2) + 1)
+        else:
+            ksize = 7
+
+        mask = cv2.GaussianBlur(mask, (ksize, ksize), 0)
     mask_normalized = mask.astype(np.float32) / 255.0
 
     im_ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb).astype(np.float32) / 255.0

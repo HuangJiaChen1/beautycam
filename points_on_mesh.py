@@ -6,7 +6,7 @@ mp_drawing_styles = mp.solutions.drawing_styles
 mp_face_mesh = mp.solutions.face_mesh
 
 # For static images:
-IMAGE_FILES = ['face_up.jpg']
+IMAGE_FILES = ['imgs/face_celian.jpg']
 drawing_spec = mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
 
 with mp_face_mesh.FaceMesh(

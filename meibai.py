@@ -56,13 +56,20 @@ def segment_face(hsv_image, face_landmarks, within_sd=2):
     h, w, _ = hsv_image.shape
 
     eye_mask = np.zeros((h, w), dtype=np.uint8)
+    lip_mask = np.zeros((h, w), dtype=np.uint8)
     right_pts = cv2.convexHull(np.array([face_landmarks[i] for i in RIGHT_EYE_RING], np.int32))
     left_pts = cv2.convexHull(np.array([face_landmarks[i] for i in LEFT_EYE_RING], np.int32))
     lips_pts = np.array([face_landmarks[i] for i in LIPS_INDICES], np.int32)
 
     cv2.fillConvexPoly(eye_mask, left_pts, 255)
     cv2.fillConvexPoly(eye_mask, right_pts, 255)
-    cv2.fillPoly(eye_mask, [lips_pts], 255)
+    cv2.fillConvexPoly(lip_mask, lips_pts, 255)
+    # kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3,3))
+    #
+    # lip_mask = cv2.erode(lip_mask,kernel,iterations=2)
+    eye_mask = cv2.bitwise_or(eye_mask, lip_mask)
+    # cv2.imshow("eye_mask", eye_mask)
+    # cv2.waitKey(0)
 
     hull = cv2.convexHull(np.array(face_landmarks, dtype=np.int32))
     face_mask = np.zeros(hsv_image.shape[:2], dtype=np.uint8)
@@ -132,11 +139,11 @@ def create_robust_skin_mask(hsv_image, lower_hsv, upper_hsv, eye_mask, close_ker
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
-    mask = cv2.dilate(mask, kernel, iterations=1)
-    mask = cv2.erode(mask, kernel, iterations=1)
+    # mask = cv2.dilate(mask, kernel, iterations=1)
+    # mask = cv2.erode(mask, kernel, iterations=1)
 
     mask_f = mask.astype(np.float32) / 255.0
-    feathered = cv2.GaussianBlur(mask_f, (9, 9), 0)
+    feathered = cv2.GaussianBlur(mask_f, close_kernel, 0)
 
     return np.clip(feathered, 0, 1)
 
@@ -148,39 +155,41 @@ def blend_whitened(original_bgr, whitened_bgr, soft_mask):
     return blended.astype(np.uint8)
 
 
-def apply_whitening_and_blend(original_image, face_landmark, hsv_image, H, S, V, MOPI):
-    lower_hsv, upper_hsv, eye_mask = segment_face(hsv_image, face_landmark)
+def apply_whitening_and_blend(original_image,eye_mask, mask, hsv_image, H, S, V, MOPI):
+    # lower_hsv, upper_hsv, eye_mask = segment_face(hsv_image, face_landmark)
+    #
+    # hard_mask = create_robust_skin_mask(
+    #     hsv_image, lower_hsv, upper_hsv, eye_mask,
+    #     close_kernel=(21, 21)
+    # )
+    close_kernel = (15, 15)
+    mask = cv2.bitwise_and(mask, cv2.bitwise_not(eye_mask))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, close_kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask_f = mask.astype(np.float32) / 255.0
+    mask = cv2.GaussianBlur(mask_f, close_kernel, 0)
 
-    hard_mask = create_robust_skin_mask(
-        hsv_image, lower_hsv, upper_hsv, eye_mask,
-        close_kernel=(21, 21)
-    )
+    whitened = meibai(hsv_image.copy(), mask * 255.0, H, S, V)
 
-    whitened = meibai(hsv_image.copy(), hard_mask * 255.0, H, S, V)
+    whitened = apply_bilateral_filter(whitened, (mask * 255.0).astype(np.uint8), MOPI)
 
-    whitened = apply_bilateral_filter(whitened, (hard_mask * 255.0).astype(np.uint8), MOPI)
-
-    final_image = blend_whitened(original_image, whitened, hard_mask)
+    final_image = blend_whitened(original_image, whitened, mask)
 
     return np.clip(final_image, 0, 255).astype(np.uint8)
 
+def get_eye_mask(image, face_landmarks):
+    h, w, _ = image.shape
 
-def process_with_downscaling(original_image, face_landmark, H, S, V, MOPI, scale=0.75):
 
-    h, w = original_image.shape[:2]
-    new_h, new_w = int(h * scale), int(w * scale)
+    eye_mask = np.zeros((h, w), dtype=np.uint8)
+    lip_mask = np.zeros((h, w), dtype=np.uint8)
+    right_pts = cv2.convexHull(np.array([face_landmarks[i] for i in RIGHT_EYE_RING], np.int32))
+    left_pts = cv2.convexHull(np.array([face_landmarks[i] for i in LEFT_EYE_RING], np.int32))
+    lips_pts = np.array([face_landmarks[i] for i in LIPS_INDICES], np.int32)
 
-    small_img = cv2.resize(original_image, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-    scaled_landmarks = [(int(x * scale), int(y * scale)) for x, y in face_landmark]
-
-    hsv_small = cv2.cvtColor(small_img, cv2.COLOR_BGR2HSV).astype(np.uint8)
-    # cv2.imshow("small", small_img)
-    # cv2.imshow('hsv', hsv_small)
-    # cv2.waitKey(0)
-
-    result_small = apply_whitening_and_blend(small_img, scaled_landmarks, hsv_small, H, S, V, MOPI)
-
-    result = cv2.resize(result_small, (w, h), interpolation=cv2.INTER_LANCZOS4)
-
-    return result
+    cv2.fillConvexPoly(eye_mask, left_pts, 255)
+    cv2.fillConvexPoly(eye_mask, right_pts, 255)
+    cv2.fillConvexPoly(lip_mask, lips_pts, 255)
+    eye_mask = cv2.bitwise_or(eye_mask, lip_mask)
+    return eye_mask
