@@ -59,9 +59,6 @@ SHOULIAN_INDICES = [234,93,132, 58, 172, 136, 150, 149, 176, 148,323,454, 361, 2
 
 POINT_OFFSET = 500
 
-# Debug flag: draw per-face ROI rectangles (easy to toggle off)
-ROI_DEBUG_DRAW = True
-
 defaults = {
     'DAYAN': 1, 'SHOULIAN': 1, 'QUANGU': 1, 'ZHAILIAN': 1, 'RENZHONG': 0,
     'BIYI': 1, 'LONGNOSE': 0.0, 'FOREHEAD': 0, 'ZUIJIAO': 0.0, 'DAZUI': 1,
@@ -242,32 +239,6 @@ def process_image(image, selected_faces, apply_bg_blur=False):
             processed_image = apply_blush(processed_image, all_2d, color=(157, 107, 255), intensity=p['BLUSH'])
 
 
-    # Compute per-face ROI from enlarged face hulls (based on hull area)
-    face_rois = {}
-    if cached_face_hulls is not None:
-        for face_idx in selected_faces:
-            if face_idx < len(cached_face_hulls) and cached_face_hulls[face_idx] is not None:
-                hull = cached_face_hulls[face_idx]
-                area = max(cv2.contourArea(hull), 1.0)
-                x, y, w, h = cv2.boundingRect(hull)
-                # padding in pixels based on face hull area
-                pad = int(max(8, 0.10 * np.sqrt(area)))
-                rx = max(0, int(x - 2*pad))
-                ry = max(0, y - pad)
-                rx2 = min(w_img - 1, int(x + w + 2*pad))
-                ry2 = min(h_img - 1, y + h + pad)
-                rw = rx2 - rx + 1
-                rh = ry2 - ry + 1
-                # ensure valid ROI
-                if rw > 2 and rh > 2:
-                    face_rois[face_idx] = (rx, ry, rw, rh)
-
-    def _proj2d(p3):
-        z = p3[2]
-        if z != 0:
-            return (p3[0] / z, p3[1] / z)
-        return (p3[0], p3[1])
-
     # First warp: shoulian
     shoulian_src = corners_dict.copy()
     shoulian_dst = corners_dict.copy()
@@ -289,38 +260,9 @@ def process_image(image, selected_faces, apply_bg_blur=False):
         for local in SHOULIAN_INDICES:
             shoulian_dst[base + local] = local_dst[local]
 
-    # ROI-scoped warping per selected face
-    for face_idx in selected_faces:
-        if face_idx not in face_rois:
-            continue
-        rx, ry, rw, rh = face_rois[face_idx]
-        roi_img = processed_image[ry:ry + rh, rx:rx + rw]
-
-        # Build ROI-local point maps for this face
-        roi_src = {}
-        roi_dst = {}
-        # ROI corners
-        roi_corners = [
-            (0, 0), (rw - 1, 0), (rw - 1, rh - 1), (0, rh - 1)
-        ]
-        corner_indices = [-1, -2, -3, -4]
-        for idx, (cx, cy) in zip(corner_indices, roi_corners):
-            roi_src[idx] = transform_to_3d(int(cx), int(cy), 1)
-            roi_dst[idx] = transform_to_3d(int(cx), int(cy), 1)
-
-        base = face_idx * POINT_OFFSET
-        for local in SHOULIAN_INDICES:
-            gidx = base + local
-            s2d = _proj2d(shoulian_src[gidx])
-            d2d = _proj2d(shoulian_dst[gidx])
-            roi_src[gidx] = transform_to_3d(int(s2d[0] - rx), int(s2d[1] - ry), shoulian_src[gidx][2])
-            roi_dst[gidx] = transform_to_3d(int(d2d[0] - rx), int(d2d[1] - ry), shoulian_dst[gidx][2])
-
-        warped_roi = warp_with_triangulation(roi_img, roi_src, roi_dst)
-        if warped_roi is not None:
-            processed_image[ry:ry + rh, rx:rx + rw] = warped_roi
-        else:
-            return bg_blur(image) if apply_bg_blur else image
+    processed_image = warp_with_triangulation(processed_image, shoulian_src, shoulian_dst)
+    if processed_image is None:
+        return bg_blur(image) if apply_bg_blur else image
 
     # Second warp: facial adjustments
     src_points = corners_dict.copy()
@@ -354,48 +296,13 @@ def process_image(image, selected_faces, apply_bg_blur=False):
         for local in BOUNDARY:
             dst_points[base + local] = local_dst[local]
 
-    # ROI-scoped warping per selected face for facial adjustments
-    for face_idx in selected_faces:
-        if face_idx not in face_rois:
-            continue
-        rx, ry, rw, rh = face_rois[face_idx]
-        roi_img = processed_image[ry:ry + rh, rx:rx + rw]
-
-        roi_src = {}
-        roi_dst = {}
-        roi_corners = [
-            (0, 0), (rw - 1, 0), (rw - 1, rh - 1), (0, rh - 1)
-        ]
-        corner_indices = [-1, -2, -3, -4]
-        for idx, (cx, cy) in zip(corner_indices, roi_corners):
-            roi_src[idx] = transform_to_3d(int(cx), int(cy), 1)
-            roi_dst[idx] = transform_to_3d(int(cx), int(cy), 1)
-
-        base = face_idx * POINT_OFFSET
-        for local in BOUNDARY:
-            gidx = base + local
-            s2d = _proj2d(src_points[gidx])
-            d2d = _proj2d(dst_points[gidx])
-            roi_src[gidx] = transform_to_3d(int(s2d[0] - rx), int(s2d[1] - ry), src_points[gidx][2])
-            roi_dst[gidx] = transform_to_3d(int(d2d[0] - rx), int(d2d[1] - ry), dst_points[gidx][2])
-
-        warped_roi = warp_with_triangulation(roi_img, roi_src, roi_dst)
-        if warped_roi is not None:
-            processed_image[ry:ry + rh, rx:rx + rw] = warped_roi
-        else:
-            return processed_image
+    processed_image = warp_with_triangulation(processed_image, src_points, dst_points)
+    if processed_image is None:
+        return processed_image
 
 
     if apply_bg_blur:
         processed_image = bg_blur(processed_image)
-
-    # Debug: visualize ROI size on the image
-    if 'face_rois' in locals() and face_rois and ROI_DEBUG_DRAW:
-        for idx, (rx, ry, rw, rh) in face_rois.items():
-            cv2.rectangle(processed_image, (rx, ry), (rx + rw - 1, ry + rh - 1), (0, 255, 255), 2)
-            label = f"{rw}x{rh}"
-            ty = max(ry - 6, 0)
-            cv2.putText(processed_image, label, (rx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
     return processed_image
 

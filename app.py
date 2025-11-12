@@ -12,7 +12,7 @@ from io import BytesIO
 
 # Import custom modules (assuming they are in the same directory)
 from affine_transformation import warp_with_triangulation
-from anti_faling import nasolabial_folds_filter
+from anti_nasolabial import nasolabial_folds_filter
 from anti_black import black_filter
 from bg import bg_blur
 from dayan import dayan
