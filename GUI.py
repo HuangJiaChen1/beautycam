@@ -6,7 +6,7 @@ from tkinter import filedialog
 from PIL import Image, ImageTk
 from functools import lru_cache
 
-from affine_transformation import warp_with_triangulation
+from affine_transformation import warp_with_triangulation, warp_with_triangulation_2d
 from anti_nasolabial import nasolabial_folds_filter
 from anti_black import black_filter
 from bg import bg_blur
@@ -197,15 +197,15 @@ def process_image(image, selected_faces, apply_bg_blur=False):
     h_img, w_img = image.shape[:2]
     num_faces = len(cached_face_landmarks)
 
-    # Corner points setup
-    corner_indices = [-1, -2, -3, -4]
-    corner_points = [
-        transform_to_3d(0, 0, 1),
-        transform_to_3d(w_img - 1, 0, 1),
-        transform_to_3d(w_img - 1, h_img - 1, 1),
-        transform_to_3d(0, h_img - 1, 1)
-    ]
-    corners_dict = dict(zip(corner_indices, corner_points))
+    # # Corner points setup
+    # corner_indices = [-1, -2, -3, -4]
+    # corner_points = [
+    #     transform_to_3d(0, 0, 1),
+    #     transform_to_3d(w_img - 1, 0, 1),
+    #     transform_to_3d(w_img - 1, h_img - 1, 1),
+    #     transform_to_3d(0, h_img - 1, 1)
+    # ]
+    # corners_dict = dict(zip(corner_indices, corner_points))
 
     # Pre-compute all face points once
     all_face_points = [get_points_all(lm.landmark, w_img, h_img) for lm in cached_face_landmarks]
@@ -253,7 +253,7 @@ def process_image(image, selected_faces, apply_bg_blur=False):
                 # padding in pixels based on face hull area
                 pad = int(max(8, 0.10 * np.sqrt(area)))
                 rx = max(0, int(x - 2*pad))
-                ry = max(0, y - pad)
+                ry = max(0, y - 4*pad)
                 rx2 = min(w_img - 1, int(x + w + 2*pad))
                 ry2 = min(h_img - 1, y + h + pad)
                 rw = rx2 - rx + 1
@@ -269,8 +269,8 @@ def process_image(image, selected_faces, apply_bg_blur=False):
         return (p3[0], p3[1])
 
     # First warp: shoulian
-    shoulian_src = corners_dict.copy()
-    shoulian_dst = corners_dict.copy()
+    shoulian_src = {}
+    shoulian_dst = {}
 
     for face_idx in range(num_faces):
         base = face_idx * POINT_OFFSET
@@ -289,42 +289,29 @@ def process_image(image, selected_faces, apply_bg_blur=False):
         for local in SHOULIAN_INDICES:
             shoulian_dst[base + local] = local_dst[local]
 
-    # ROI-scoped warping per selected face
-    for face_idx in selected_faces:
-        if face_idx not in face_rois:
-            continue
-        rx, ry, rw, rh = face_rois[face_idx]
-        roi_img = processed_image[ry:ry + rh, rx:rx + rw]
+    # Whole-image warping with ROI anchors for shoulian
+    # Add 8-point ROI anchors (corners + midpoints) to constrain warp
+    if 'face_rois' in locals() and face_rois:
+        for face_idx in selected_faces:
+            if face_idx not in face_rois:
+                continue
+            rx, ry, rw, rh = face_rois[face_idx]
+            anchors = [
+                (rx, ry), (rx + rw - 1, ry), (rx + rw - 1, ry + rh - 1), (rx, ry + rh - 1),
+                (rx + rw // 2, ry), (rx + rw - 1, ry + rh // 2), (rx + rw // 2, ry + rh - 1), (rx, ry + rh // 2)
+            ]
+            base = face_idx * POINT_OFFSET
+            for i, (ax, ay) in enumerate(anchors):
+                gidx = base - 1000 - i  # unique negative indices per face
+                p3 = transform_to_3d(int(ax), int(ay), 1)
+                shoulian_src[gidx] = p3
+                shoulian_dst[gidx] = p3
 
-        # Build ROI-local point maps for this face
-        roi_src = {}
-        roi_dst = {}
-        # ROI corners
-        roi_corners = [
-            (0, 0), (rw - 1, 0), (rw - 1, rh - 1), (0, rh - 1)
-        ]
-        corner_indices = [-1, -2, -3, -4]
-        for idx, (cx, cy) in zip(corner_indices, roi_corners):
-            roi_src[idx] = transform_to_3d(int(cx), int(cy), 1)
-            roi_dst[idx] = transform_to_3d(int(cx), int(cy), 1)
-
-        base = face_idx * POINT_OFFSET
-        for local in SHOULIAN_INDICES:
-            gidx = base + local
-            s2d = _proj2d(shoulian_src[gidx])
-            d2d = _proj2d(shoulian_dst[gidx])
-            roi_src[gidx] = transform_to_3d(int(s2d[0] - rx), int(s2d[1] - ry), shoulian_src[gidx][2])
-            roi_dst[gidx] = transform_to_3d(int(d2d[0] - rx), int(d2d[1] - ry), shoulian_dst[gidx][2])
-
-        warped_roi = warp_with_triangulation(roi_img, roi_src, roi_dst)
-        if warped_roi is not None:
-            processed_image[ry:ry + rh, rx:rx + rw] = warped_roi
-        else:
-            return bg_blur(image) if apply_bg_blur else image
+    processed_image = warp_with_triangulation(processed_image, shoulian_src, shoulian_dst)
 
     # Second warp: facial adjustments
-    src_points = corners_dict.copy()
-    dst_points = corners_dict.copy()
+    src_points = {}
+    dst_points = {}
 
     for face_idx in range(num_faces):
         base = face_idx * POINT_OFFSET
@@ -354,36 +341,24 @@ def process_image(image, selected_faces, apply_bg_blur=False):
         for local in BOUNDARY:
             dst_points[base + local] = local_dst[local]
 
-    # ROI-scoped warping per selected face for facial adjustments
-    for face_idx in selected_faces:
-        if face_idx not in face_rois:
-            continue
-        rx, ry, rw, rh = face_rois[face_idx]
-        roi_img = processed_image[ry:ry + rh, rx:rx + rw]
+    # Whole-image warping with ROI anchors for facial adjustments
+    if 'face_rois' in locals() and face_rois:
+        for face_idx in selected_faces:
+            if face_idx not in face_rois:
+                continue
+            rx, ry, rw, rh = face_rois[face_idx]
+            anchors = [
+                (rx, ry), (rx + rw - 1, ry), (rx + rw - 1, ry + rh - 1), (rx, ry + rh - 1),
+                (rx + rw // 2, ry), (rx + rw - 1, ry + rh // 2), (rx + rw // 2, ry + rh - 1), (rx, ry + rh // 2)
+            ]
+            base = face_idx * POINT_OFFSET
+            for i, (ax, ay) in enumerate(anchors):
+                gidx = base - 2000 - i  # unique negative indices per face for second warp
+                p3 = transform_to_3d(int(ax), int(ay), 1)
+                src_points[gidx] = p3
+                dst_points[gidx] = p3
 
-        roi_src = {}
-        roi_dst = {}
-        roi_corners = [
-            (0, 0), (rw - 1, 0), (rw - 1, rh - 1), (0, rh - 1)
-        ]
-        corner_indices = [-1, -2, -3, -4]
-        for idx, (cx, cy) in zip(corner_indices, roi_corners):
-            roi_src[idx] = transform_to_3d(int(cx), int(cy), 1)
-            roi_dst[idx] = transform_to_3d(int(cx), int(cy), 1)
-
-        base = face_idx * POINT_OFFSET
-        for local in BOUNDARY:
-            gidx = base + local
-            s2d = _proj2d(src_points[gidx])
-            d2d = _proj2d(dst_points[gidx])
-            roi_src[gidx] = transform_to_3d(int(s2d[0] - rx), int(s2d[1] - ry), src_points[gidx][2])
-            roi_dst[gidx] = transform_to_3d(int(d2d[0] - rx), int(d2d[1] - ry), dst_points[gidx][2])
-
-        warped_roi = warp_with_triangulation(roi_img, roi_src, roi_dst)
-        if warped_roi is not None:
-            processed_image[ry:ry + rh, rx:rx + rw] = warped_roi
-        else:
-            return processed_image
+    processed_image = warp_with_triangulation(processed_image, src_points, dst_points)
 
 
     if apply_bg_blur:
@@ -560,7 +535,7 @@ for i in range(3):
 param_to_var = {param: tk.DoubleVar(value=defaults[param]) for param in all_params}
 
 slider_config = [
-    ("大眼", 'DAYAN', 1.0, 1.1, 0.01, 0, 0),
+    ("大眼", 'DAYAN', 1.0, 1.1, 0.001, 0, 0),
     ("瘦脸", 'SHOULIAN', 0.95, 1.0, 0.005, 0, 1),
     ("颧骨", 'QUANGU', 0.95, 1.0, 0.005, 0, 2),
     ("人中", 'RENZHONG', -3.0, 3.0, 0.005, 1, 2),

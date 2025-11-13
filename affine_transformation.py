@@ -95,23 +95,21 @@ def warp_with_triangulation(image, source_points, scaled_points):
 
     return warped_eye
 
+def warp_with_triangulation_2d(image, source_points, scaled_points):
+    H, W = image.shape[:2]
+    border_pts = np.array(
+        [[0, 0], [W - 1, 0], [W - 1, H - 1], [0, H - 1], [W // 2, 0], [W - 1, H // 2], [W // 2, H - 1], [0, H // 2]],
+        np.float32)
+    s_list = []
+    d_list = []
+    for k,v in source_points.items():
+        s_list.append(v)
+    for k,v in scaled_points.items():
+        d_list.append(v)
+    src_all = np.vstack([s_list, border_pts])
+    dst_all = np.vstack([d_list, border_pts])
+    # print(src_all.shape)
+    # print(dst_all.shape)
+    warped_eye = warp_image_piecewise_affine(image, src_all, dst_all)
 
-def _project_points_dict_to_2d(points_dict, indices):
-    src = []
-    for idx in indices:
-        p = points_dict[idx]
-        x, y = project_to_2d(p)
-        src.append([x, y])
-    return np.asarray(src, dtype=np.float32)
-
-
-def _compute_roi_from_points(points, padding, W, H):
-    if points.shape[0] == 0:
-        return 0, 0, W, H
-    xs = points[:, 0]
-    ys = points[:, 1]
-    x0 = max(int(np.floor(xs.min())) - padding, 0)
-    y0 = max(int(np.floor(ys.min())) - padding, 0)
-    x1 = min(int(np.ceil(xs.max())) + padding, W - 1)
-    y1 = min(int(np.ceil(ys.max())) + padding, H - 1)
-    return x0, y0, x1 - x0 + 1, y1 - y0 + 1
+    return warped_eye
