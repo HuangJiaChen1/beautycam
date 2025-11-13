@@ -8,6 +8,8 @@ mp_face_mesh = mp.solutions.face_mesh
 L_EYE_INDICES = [374, 380, 390, 373, 249, 385, 384, 263, 466, 387, 386, 381, 382, 398, 388, 362]
 R_EYE_INDICES = [154, 155, 33, 7, 246, 161, 159, 158, 144, 145, 173, 133, 157, 163, 153, 160]
 
+# L_EYE_INDICES = [462,386,374,263]
+# R_EYE_INDICES = [33,155,145,159]
 
 def enlarge(cheek_points, midpoint, shrink_factor):
     diff = cheek_points - midpoint
