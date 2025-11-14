@@ -6,7 +6,7 @@ TEETH_INDICES = [78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,17
 
 def white_teeth(image, landmarks, strength):
     h, w, _ = image.shape
-
+    # print(strength)
     teeth_pts = np.array([landmarks[i] for i in TEETH_INDICES], np.int32)
     mask_u8 = np.zeros((h, w), dtype=np.uint8)
     cv2.fillPoly(mask_u8, [teeth_pts], 255)

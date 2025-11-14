@@ -14,6 +14,7 @@ from dayan import dayan
 from dazui import dazui
 from forehead import forehead
 from long_nose import longnose
+from main import apply_big_eye_effect
 from meibai import apply_whitening_and_blend, get_eye_mask
 from renzhong import renzhong
 from shoulian import shoulian
@@ -240,7 +241,7 @@ def process_image(image, selected_faces, apply_bg_blur=False):
             processed_image = apply_lipstick(processed_image, all_2d, p['LIPSTICK'])
         if p['BLUSH'] > 0:
             processed_image = apply_blush(processed_image, all_2d, color=(157, 107, 255), intensity=p['BLUSH'])
-
+        processed_image = apply_big_eye_effect(processed_image, p['DAYAN'], all_2d)
 
     # Compute per-face ROI from enlarged face hulls (based on hull area)
     face_rois = {}
@@ -253,7 +254,7 @@ def process_image(image, selected_faces, apply_bg_blur=False):
                 # padding in pixels based on face hull area
                 pad = int(max(8, 0.10 * np.sqrt(area)))
                 rx = max(0, int(x - 2*pad))
-                ry = max(0, y - 4*pad)
+                ry = max(0, y - 10*pad)
                 rx2 = min(w_img - 1, int(x + w + 2*pad))
                 ry2 = min(h_img - 1, y + h + pad)
                 rw = rx2 - rx + 1
@@ -328,7 +329,8 @@ def process_image(image, selected_faces, apply_bg_blur=False):
         local_dst = {local: dst_points[base + local] for local in BOUNDARY}
 
         # Apply all transformations
-        dayan(p['DAYAN'], local_dst)
+        # dayan(p['DAYAN'], local_dst)
+
         quangu(p['QUANGU'] * p['ZHAILIAN'], local_dst)
         biyi(p['BIYI'], local_dst)
         longnose(p['LONGNOSE'], local_dst)
