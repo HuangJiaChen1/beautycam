@@ -114,8 +114,8 @@ def apply_blush(image,landmarks, color=(157, 107, 255), intensity=0.6):
     forbidden_mask = np.maximum(1 - face_mask, np.maximum(eye_mask, np.maximum(nose_mask, mouth_mask)))
 
     forbidden_3ch = cv2.merge([forbidden_mask, forbidden_mask, forbidden_mask])
-    # cv2.imshow('forbidden', forbidden_3ch)
-    # cv2.waitKey(0)
+    cv2.imshow('forbidden', forbidden_3ch)
+    cv2.waitKey(0)
     output_float = output_image.astype(np.float32)
     original_float = image.astype(np.float32)
     output_image = output_float * (1 - forbidden_3ch) + original_float * forbidden_3ch

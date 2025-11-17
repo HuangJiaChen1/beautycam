@@ -39,6 +39,7 @@ from skin_segmenter import get_exposed_skin_mask
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_selfie_segmentation = mp.solutions.selfie_segmentation
+mp_face_detection = mp.solutions.face_detection
 
 # Constants (aligned with GUI.py)
 EYE_INDICES = [374, 380, 390, 373, 249, 385, 384, 263, 466, 387, 386, 381, 382, 398, 388, 362, 154, 155, 33, 7, 246,
@@ -58,8 +59,6 @@ SHOULIAN_INDICES = [234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 323, 454, 36
                     33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246, 263, 249, 390, 373,
                     374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]
 
-POINT_OFFSET = 500
-
 # Defaults
 defaults = {
     'DAYAN': 1, 'SHOULIAN': 1, 'QUANGU': 1, 'ZHAILIAN': 1, 'RENZHONG': 0,
@@ -71,10 +70,12 @@ defaults = {
 all_params = list(defaults.keys())
 
 # Global state (per-request reset in endpoint for new images)
-cached_face_landmarks = None
+cached_face_landmarks = []
+cached_face_landmarks_crops = []
 cached_segmentation_mask = None
 cached_image_shape = None
-cached_face_hulls = None
+cached_face_hulls = []
+cached_face_bboxes = []
 selected_faces = set()
 face_params = {}
 shared_params = {'S': 0, 'V': 0, 'MOPI': 0}
@@ -98,6 +99,51 @@ def get_points_2D(landmarks, width, height):
     return [(int(lm.x * width), int(lm.y * height)) for lm in landmarks]
 
 
+def get_dynamic_upsample_factor(face_width: int, face_height: int) -> int:
+    """Pick an upsample factor based on the smaller face dimension."""
+    size = min(face_width, face_height)
+    if size < 120:
+        return 4
+    if size < 180:
+        return 3
+    if size < 300:
+        return 2
+    return 1
+
+
+class _SimpleLandmark:
+    def __init__(self, x: float, y: float, z: float):
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+class _SimpleLandmarkList:
+    def __init__(self, landmarks):
+        self.landmark = landmarks
+
+
+def _to_full_image_landmarks(face_lm_list, bbox, img_w, img_h):
+    """Map crop-normalized landmarks to normalized full-image coordinates."""
+    xmin, ymin, bw, bh = bbox
+    landmarks = []
+    for lm in face_lm_list.landmark:
+        abs_x = xmin + (lm.x * bw)
+        abs_y = ymin + (lm.y * bh)
+        x_norm = abs_x / float(img_w) if img_w else 0.0
+        y_norm = abs_y / float(img_h) if img_h else 0.0
+        landmarks.append(_SimpleLandmark(x_norm, y_norm, lm.z))
+    return _SimpleLandmarkList(landmarks)
+
+
+def _clone_normalized_landmarks(face_lm_list):
+    """Clone a MediaPipe landmark list as a lightweight _SimpleLandmarkList."""
+    landmarks = []
+    for lm in face_lm_list.landmark:
+        landmarks.append(_SimpleLandmark(lm.x, lm.y, lm.z))
+    return _SimpleLandmarkList(landmarks)
+
+
 def compute_face_hulls(landmarks_list, w, h):
     """Pre-compute convex hulls for all faces"""
     hulls = []
@@ -113,222 +159,214 @@ def compute_face_hulls(landmarks_list, w, h):
 
 
 def run_model_inference(image):
-    """Run face mesh inference once"""
-    global cached_face_landmarks, cached_segmentation_mask, cached_image_shape, cached_face_hulls
+    """Run Mediapipe Face Detection and FaceMesh per detected face crop."""
+    global cached_face_landmarks, cached_face_landmarks_crops, cached_segmentation_mask, cached_image_shape, cached_face_hulls, cached_face_bboxes
 
     if image is None:
         return None, None
 
+    cached_face_landmarks = []
+    cached_face_landmarks_crops = []
+    cached_face_hulls = []
+    cached_face_bboxes = []
+
     cached_image_shape = image.shape
     h, w = image.shape[:2]
 
-    # Face mesh inference
+    # Face detection to define higher quality crops
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
+        faces = face_detection.process(image_rgb)
+
+    face_bboxes = []
+    face_crops = []
+    if faces and faces.detections:
+        for detection in faces.detections:
+            bbox_rel = detection.location_data.relative_bounding_box
+            xmin_pix = int(bbox_rel.xmin * w)
+            ymin_pix = int(bbox_rel.ymin * h)
+            width_pix = int(bbox_rel.width * w)
+            height_pix = int(bbox_rel.height * h)
+
+            cx = xmin_pix + width_pix / 2.0
+            cy = ymin_pix + height_pix / 2.0
+            new_w = int(round(width_pix * 1.2))
+            new_h = int(round(height_pix * 2.0))
+            new_xmin = int(round(cx - new_w / 2.0))
+            new_ymin = int(round(cy - new_h / 2.0))
+
+            x0 = max(0, min(new_xmin, w - 1))
+            y0 = max(0, min(new_ymin, h - 1))
+            x1 = max(x0 + 1, min(new_xmin + new_w, w))
+            lower_half = int(round(cy + 1.2 * (height_pix / 2.0)))
+            y1 = max(y0 + 1, min(lower_half, h))
+
+            final_w = max(1, x1 - x0)
+            final_h = max(1, y1 - y0)
+            face_crop = image[y0:y0 + final_h, x0:x0 + final_w]
+            if face_crop.size == 0:
+                continue
+            face_crops.append(face_crop)
+            face_bboxes.append((x0, y0, final_w, final_h))
+
+    # Run mesh per crop (or fallback to whole image)
     with mp_face_mesh.FaceMesh(
             static_image_mode=True,
-            max_num_faces=5,
+            max_num_faces=1,
             refine_landmarks=True,
             min_detection_confidence=0.5) as face_mesh:
+        if face_crops:
+            for crop, bbox in zip(face_crops, face_bboxes):
+                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                crop_results = face_mesh.process(crop_rgb)
+                if not crop_results.multi_face_landmarks:
+                    continue
+                for lm_list in crop_results.multi_face_landmarks:
+                    mapped_full = _to_full_image_landmarks(lm_list, bbox, w, h)
+                    crop_norm = _clone_normalized_landmarks(lm_list)
+                    cached_face_landmarks.append(mapped_full)
+                    cached_face_landmarks_crops.append(crop_norm)
+        else:
+            full_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            face_results = face_mesh.process(full_rgb)
+            if face_results.multi_face_landmarks:
+                for lm_list in face_results.multi_face_landmarks:
+                    landmarks = [_SimpleLandmark(lm.x, lm.y, lm.z) for lm in lm_list.landmark]
+                    lmlist = _SimpleLandmarkList(landmarks)
+                    cached_face_landmarks.append(lmlist)
+                    cached_face_landmarks_crops.append(lmlist)
+                if cached_face_landmarks:
+                    face_bboxes = [(0, 0, w, h)] * len(cached_face_landmarks)
 
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        face_results = face_mesh.process(image_rgb)
-        cached_face_landmarks = face_results.multi_face_landmarks if face_results.multi_face_landmarks else []
+    if face_bboxes:
+        cached_face_bboxes = face_bboxes
+    elif cached_face_landmarks:
+        cached_face_bboxes = [(0, 0, w, h)] * len(cached_face_landmarks)
 
-    # Pre-compute convex hulls
     if cached_face_landmarks:
         cached_face_hulls = compute_face_hulls(cached_face_landmarks, w, h)
     else:
         cached_face_hulls = []
 
-    # Full-image exposed-skin mask (aligned with GUI)
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     cached_segmentation_mask = get_exposed_skin_mask(image_rgb)
     return cached_face_landmarks, cached_segmentation_mask
 
 def process_image(image, selected_faces, apply_bg_blur=False):
-    """Optimized image processing pipeline"""
-    global cached_face_landmarks, face_params
+    """Process image per cropped face ROI and composite back."""
+    global cached_face_landmarks, cached_face_landmarks_crops, cached_face_bboxes, face_params, cached_segmentation_mask
 
     if image is None or not cached_face_landmarks or not selected_faces:
         return bg_blur(image) if apply_bg_blur else image
 
     h_img, w_img = image.shape[:2]
-    num_faces = len(cached_face_landmarks)
 
-    # # Corner points setup
-    # corner_indices = [-1, -2, -3, -4]
-    # corner_points = [
-    #     transform_to_3d(0, 0, 1),
-    #     transform_to_3d(w_img - 1, 0, 1),
-    #     transform_to_3d(w_img - 1, h_img - 1, 1),
-    #     transform_to_3d(0, h_img - 1, 1)
-    # ]
-    # corners_dict = dict(zip(corner_indices, corner_points))
-
-    # Pre-compute all face points once
-    all_face_points = [get_points_all(lm.landmark, w_img, h_img) for lm in cached_face_landmarks]
-    # Apply filters (batch HSV conversion)
     hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    eye_mask = np.zeros((hsv_image.shape[0], hsv_image.shape[1]), np.uint8)
-    # processed_image = image.copy()
+    eye_mask = np.zeros((h_img, w_img), np.uint8)
     for face_idx in selected_faces:
-        all_2d = get_points_2D(cached_face_landmarks[face_idx].landmark, w_img, h_img)
-        eye_mask_per_face = get_eye_mask(image,all_2d)
-        eye_mask = cv2.bitwise_or(eye_mask, eye_mask_per_face)
-    processed_image = apply_whitening_and_blend(image, eye_mask, cached_segmentation_mask, hsv_image, 0, shared_params['S'],
-                                                shared_params['V'], shared_params['MOPI'])
+        if face_idx >= len(cached_face_landmarks):
+            continue
+        all_2d_full = get_points_2D(cached_face_landmarks[face_idx].landmark, w_img, h_img)
+        eye_mask = cv2.bitwise_or(eye_mask, get_eye_mask(image, all_2d_full))
 
-    for face_idx in selected_faces:
-        p = face_params[face_idx]
-        all_2d = get_points_2D(cached_face_landmarks[face_idx].landmark, w_img, h_img)
-        eye_mask_per_face = get_eye_mask(image,all_2d)
-        eye_mask = cv2.bitwise_or(eye_mask, eye_mask_per_face)
-
-        if p['DETAIL'] > 0:
-            processed_image = enhance_face_detail(processed_image, all_2d, strength_pct=p['DETAIL'])
-        if p['FALING'] > 0:
-            processed_image = nasolabial_folds_filter(processed_image, all_2d, p['FALING'])
-        if p['BLACK'] > 0:
-            processed_image = black_filter(processed_image, all_2d, p['BLACK'])
-        if p['WHITE_EYE'] != 1:
-            processed_image = white_eyes(processed_image, all_2d, p['WHITE_EYE'])
-        if p['WHITE_TEETH'] != 1:
-            processed_image = white_teeth(processed_image, all_2d, p['WHITE_TEETH'])
-        if p['LIPSTICK'] > 0:
-            processed_image = apply_lipstick(processed_image, all_2d, p['LIPSTICK'])
-        if p['BLUSH'] > 0:
-            processed_image = apply_blush(processed_image, all_2d, color=(157, 107, 255), intensity=p['BLUSH'])
-        processed_image = apply_big_eye_effect(processed_image, p['DAYAN'], all_2d)
-
-    # Compute per-face ROI from enlarged face hulls (based on hull area)
-    face_rois = {}
-    if cached_face_hulls is not None:
-        for face_idx in selected_faces:
-            if face_idx < len(cached_face_hulls) and cached_face_hulls[face_idx] is not None:
-                hull = cached_face_hulls[face_idx]
-                area = max(cv2.contourArea(hull), 1.0)
-                x, y, w, h = cv2.boundingRect(hull)
-                # padding in pixels based on face hull area
-                pad = int(max(8, 0.10 * np.sqrt(area)))
-                rx = max(0, int(x - 2*pad))
-                ry = max(0, y - 10*pad)
-                rx2 = min(w_img - 1, int(x + w + 2*pad))
-                ry2 = min(h_img - 1, y + h + pad)
-                rw = rx2 - rx + 1
-                rh = ry2 - ry + 1
-                # ensure valid ROI
-                if rw > 2 and rh > 2:
-                    face_rois[face_idx] = (rx, ry, rw, rh)
-
-    def _proj2d(p3):
-        z = p3[2]
-        if z != 0:
-            return (p3[0] / z, p3[1] / z)
-        return (p3[0], p3[1])
-
-    # First warp: shoulian
-    shoulian_src = {}
-    shoulian_dst = {}
-
-    for face_idx in range(num_faces):
-        base = face_idx * POINT_OFFSET
-        face_all_point = all_face_points[face_idx]
-        for local in SHOULIAN_INDICES:
-            gidx = base + local
-            pt = face_all_point[local]
-            shoulian_src[gidx] = pt
-            shoulian_dst[gidx] = pt
+    processed_image = apply_whitening_and_blend(
+        image,
+        eye_mask,
+        cached_segmentation_mask,
+        hsv_image,
+        0,
+        shared_params['S'],
+        shared_params['V'],
+        shared_params['MOPI']
+    )
 
     for face_idx in selected_faces:
-        p = face_params[face_idx]
-        base = face_idx * POINT_OFFSET
-        local_dst = {local: shoulian_dst[base + local] for local in SHOULIAN_INDICES}
-        shoulian(p['SHOULIAN'], local_dst)
-        for local in SHOULIAN_INDICES:
-            shoulian_dst[base + local] = local_dst[local]
+        if face_idx >= len(cached_face_bboxes) or face_idx >= len(cached_face_landmarks_crops):
+            continue
 
-    # Whole-image warping with ROI anchors for shoulian
-    # Add 8-point ROI anchors (corners + midpoints) to constrain warp
-    if 'face_rois' in locals() and face_rois:
-        for face_idx in selected_faces:
-            if face_idx not in face_rois:
-                continue
-            rx, ry, rw, rh = face_rois[face_idx]
-            anchors = [
-                (rx, ry), (rx + rw - 1, ry), (rx + rw - 1, ry + rh - 1), (rx, ry + rh - 1),
-                (rx + rw // 2, ry), (rx + rw - 1, ry + rh // 2), (rx + rw // 2, ry + rh - 1), (rx, ry + rh // 2)
-            ]
-            base = face_idx * POINT_OFFSET
-            for i, (ax, ay) in enumerate(anchors):
-                gidx = base - 1000 - i  # unique negative indices per face
-                p3 = transform_to_3d(int(ax), int(ay), 1)
-                shoulian_src[gidx] = p3
-                shoulian_dst[gidx] = p3
+        bbox = cached_face_bboxes[face_idx]
+        if not bbox:
+            continue
+        x, y, w_crop, h_crop = bbox
+        if w_crop <= 1 or h_crop <= 1:
+            continue
 
-    processed_image = warp_with_triangulation(processed_image, shoulian_src, shoulian_dst)
+        params = face_params.get(face_idx)
+        if not params:
+            params = {k: v for k, v in defaults.items() if k not in ['S', 'V', 'MOPI']}
+            face_params[face_idx] = params
 
-    # Second warp: facial adjustments
-    src_points = {}
-    dst_points = {}
+        scale = get_dynamic_upsample_factor(w_crop, h_crop)
+        w_big = w_crop * scale
+        h_big = h_crop * scale
 
-    for face_idx in range(num_faces):
-        base = face_idx * POINT_OFFSET
-        face_all_point = all_face_points[face_idx]
-        for local in BOUNDARY:
-            gidx = base + local
-            pt = face_all_point[local]
-            src_points[gidx] = pt
-            dst_points[gidx] = pt
+        roi = processed_image[y:y + h_crop, x:x + w_crop].copy()
+        if roi.size == 0:
+            continue
+        if scale > 1:
+            roi_big = cv2.resize(roi, (w_big, h_big), interpolation=cv2.INTER_NEAREST)
+        else:
+            roi_big = roi.copy()
 
-    for face_idx in selected_faces:
-        p = face_params[face_idx]
-        base = face_idx * POINT_OFFSET
-        local_dst = {local: dst_points[base + local] for local in BOUNDARY}
+        lm_crop = cached_face_landmarks_crops[face_idx]
 
-        # Apply all transformations
-        # dayan(p['DAYAN'], local_dst)
+        def lm_to_big(landmark_list):
+            return [(lm.x * w_big, lm.y * h_big) for lm in landmark_list.landmark]
 
-        quangu(p['QUANGU'] * p['ZHAILIAN'], local_dst)
-        biyi(p['BIYI'], local_dst)
-        longnose(p['LONGNOSE'], local_dst)
-        zhailian(p['ZHAILIAN'], local_dst)
-        renzhong(p['RENZHONG'], local_dst)
-        forehead(p['FOREHEAD'], local_dst)
-        zuijiao(p['ZUIJIAO'], local_dst)
-        dazui(p['DAZUI'], local_dst)
+        def lm3d_to_big(landmark_list):
+            return [(lm.x * w_big * (lm.z + 1), lm.y * h_big * (lm.z + 1), lm.z + 1)
+                    for lm in landmark_list.landmark]
 
-        for local in BOUNDARY:
-            dst_points[base + local] = local_dst[local]
+        all_2d_big = lm_to_big(lm_crop)
+        face_points3d_big = lm3d_to_big(lm_crop)
 
-    # Whole-image warping with ROI anchors for facial adjustments
-    if 'face_rois' in locals() and face_rois:
-        for face_idx in selected_faces:
-            if face_idx not in face_rois:
-                continue
-            rx, ry, rw, rh = face_rois[face_idx]
-            anchors = [
-                (rx, ry), (rx + rw - 1, ry), (rx + rw - 1, ry + rh - 1), (rx, ry + rh - 1),
-                (rx + rw // 2, ry), (rx + rw - 1, ry + rh // 2), (rx + rw // 2, ry + rh - 1), (rx, ry + rh // 2)
-            ]
-            base = face_idx * POINT_OFFSET
-            for i, (ax, ay) in enumerate(anchors):
-                gidx = base - 2000 - i  # unique negative indices per face for second warp
-                p3 = transform_to_3d(int(ax), int(ay), 1)
-                src_points[gidx] = p3
-                dst_points[gidx] = p3
+        shoulian_src = {i: face_points3d_big[i] for i in SHOULIAN_INDICES if i < len(face_points3d_big)}
+        shoulian_dst = shoulian_src.copy()
+        local_dst = dict(shoulian_dst)
+        shoulian(params['SHOULIAN'], local_dst)
+        for k in local_dst:
+            shoulian_dst[k] = local_dst[k]
+        roi_big = warp_with_triangulation(roi_big, shoulian_src, shoulian_dst)
 
-    processed_image = warp_with_triangulation(processed_image, src_points, dst_points)
+        src_points = {i: face_points3d_big[i] for i in BOUNDARY if i < len(face_points3d_big)}
+        dst_points = src_points.copy()
+        local_dst = dict(dst_points)
+        quangu(params['QUANGU'] * params['ZHAILIAN'], local_dst)
+        biyi(params['BIYI'], local_dst)
+        longnose(params['LONGNOSE'], local_dst)
+        zhailian(params['ZHAILIAN'], local_dst)
+        renzhong(params['RENZHONG'], local_dst)
+        forehead(params['FOREHEAD'], local_dst)
+        zuijiao(params['ZUIJIAO'], local_dst)
+        dazui(params['DAZUI'], local_dst)
+        for k in local_dst:
+            dst_points[k] = local_dst[k]
+        roi_big = warp_with_triangulation(roi_big, src_points, dst_points)
 
+        if params['DETAIL'] > 0:
+            roi_big = enhance_face_detail(roi_big, all_2d_big, strength_pct=params['DETAIL'])
+        if params['FALING'] > 0:
+            roi_big = nasolabial_folds_filter(roi_big, all_2d_big, params['FALING'])
+        if params['BLACK'] > 0:
+            roi_big = black_filter(roi_big, all_2d_big, params['BLACK'])
+        if params['WHITE_EYE'] != 1:
+            roi_big = white_eyes(roi_big, all_2d_big, params['WHITE_EYE'])
+        if params['WHITE_TEETH'] != 1:
+            roi_big = white_teeth(roi_big, all_2d_big, params['WHITE_TEETH'])
+        if params['LIPSTICK'] > 0:
+            roi_big = apply_lipstick(roi_big, all_2d_big, params['LIPSTICK'])
+        if params['BLUSH'] > 0:
+            roi_big = apply_blush(roi_big, all_2d_big, color=(157, 107, 255), intensity=params['BLUSH'])
+        roi_big = apply_big_eye_effect(roi_big, params['DAYAN'], all_2d_big)
+
+        if scale > 1:
+            roi_final = cv2.resize(roi_big, (w_crop, h_crop), interpolation=cv2.INTER_AREA)
+        else:
+            roi_final = roi_big
+
+        processed_image[y:y + h_crop, x:x + w_crop] = roi_final
 
     if apply_bg_blur:
         processed_image = bg_blur(processed_image)
-
-    # Debug: visualize ROI size on the image
-    if 'face_rois' in locals() and face_rois and ROI_DEBUG_DRAW:
-        for idx, (rx, ry, rw, rh) in face_rois.items():
-            cv2.rectangle(processed_image, (rx, ry), (rx + rw - 1, ry + rh - 1), (0, 255, 255), 2)
-            label = f"{rw}x{rh}"
-            ty = max(ry - 6, 0)
-            cv2.putText(processed_image, label, (rx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
     return processed_image
 
@@ -345,7 +383,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 @app.route('/beauty', methods=['POST'])
 def upload_image():
-    global cached_face_landmarks, cached_segmentation_mask, cached_image_shape, cached_face_hulls, selected_faces, face_params, shared_params, bg_blur_enabled, global_current_image
+    global cached_face_landmarks, cached_face_landmarks_crops, cached_face_bboxes, cached_segmentation_mask, cached_image_shape, cached_face_hulls, selected_faces, face_params, shared_params, bg_blur_enabled, global_current_image
 
     array_param_str = request.form.get('array_param', json.dumps(defaults))  # Default to defaults if not provided
     try:
@@ -401,11 +439,14 @@ def upload_image():
         global_current_image = image.copy()
 
         # Reset processing globals for new image
-        cached_face_landmarks = None
+        cached_face_landmarks = []
+        cached_face_landmarks_crops = []
+        cached_face_bboxes = []
         cached_segmentation_mask = None
         cached_image_shape = None
-        cached_face_hulls = None
+        cached_face_hulls = []
         selected_faces = set()
+        face_params = {}
 
         # Run inference
         run_model_inference(image)
