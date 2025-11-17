@@ -12,31 +12,44 @@ def delaunay_triangulation(points, w, h):
     tri = Delaunay(points)
     return tri.simplices
 
+def clamp_rect(rect, max_w, max_h):
+    x, y, w, h = rect
+    x1 = min(max(x, 0), max_w)
+    y1 = min(max(y, 0), max_h)
+    x2 = min(x + w, max_w)
+    y2 = min(y + h, max_h)
+    return [x1, y1, max(0, x2 - x1), max(0, y2 - y1)]
+
+
 def warp_triangle(src, dst, t_src, t_dst):
-    r1 = cv2.boundingRect(t_src)
-    r2 = cv2.boundingRect(t_dst)
+    src_h, src_w = src.shape[:2]
+    dst_h, dst_w = dst.shape[:2]
 
-    t1Rect = np.array([[t_src[0][0]-r1[0], t_src[0][1]-r1[1]],
-                       [t_src[1][0]-r1[0], t_src[1][1]-r1[1]],
-                       [t_src[2][0]-r1[0], t_src[2][1]-r1[1]]], dtype=np.float32)
+    r1 = list(cv2.boundingRect(t_src))
+    r2 = list(cv2.boundingRect(t_dst))
 
-    t2Rect = np.array([[t_dst[0][0]-r2[0], t_dst[0][1]-r2[1]],
-                       [t_dst[1][0]-r2[0], t_dst[1][1]-r2[1]],
-                       [t_dst[2][0]-r2[0], t_dst[2][1]-r2[1]]], dtype=np.float32)
+    clamped_r1 = clamp_rect(r1, src_w, src_h)
+    clamped_r2 = clamp_rect(r2, dst_w, dst_h)
+
+    if clamped_r1[2] == 0 or clamped_r1[3] == 0 or clamped_r2[2] == 0 or clamped_r2[3] == 0:
+        return
+
+    t1Rect = np.array([[t_src[0][0]-clamped_r1[0], t_src[0][1]-clamped_r1[1]],
+                       [t_src[1][0]-clamped_r1[0], t_src[1][1]-clamped_r1[1]],
+                       [t_src[2][0]-clamped_r1[0], t_src[2][1]-clamped_r1[1]]], dtype=np.float32)
+
+    t2Rect = np.array([[t_dst[0][0]-clamped_r2[0], t_dst[0][1]-clamped_r2[1]],
+                       [t_dst[1][0]-clamped_r2[0], t_dst[1][1]-clamped_r2[1]],
+                       [t_dst[2][0]-clamped_r2[0], t_dst[2][1]-clamped_r2[1]]], dtype=np.float32)
 
     M = cv2.getAffineTransform(t1Rect, t2Rect)
 
-    srcROI = src[r1[1]:r1[1]+r1[3], r1[0]:r1[0]+r1[2]]
-    warped = cv2.warpAffine(srcROI, M, (r2[2], r2[3]), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    srcROI = src[clamped_r1[1]:clamped_r1[1]+clamped_r1[3], clamped_r1[0]:clamped_r1[0]+clamped_r1[2]]
+    warped = cv2.warpAffine(srcROI, M, (clamped_r2[2], clamped_r2[3]), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT)
 
-    mask = np.zeros((r2[3], r2[2], 3), dtype=np.float32)
+    mask = np.zeros((clamped_r2[3], clamped_r2[2], 3), dtype=np.float32)
     cv2.fillConvexPoly(mask, np.int32(t2Rect), (1.0, 1.0, 1.0), cv2.LINE_AA)
-    # print(r1)
-    # print(r2)
-    dstROI = dst[r2[1]:r2[1]+r2[3], r2[0]:r2[0]+r2[2]]
-    # print(f"mask shape: {mask.shape}")
-    # print(f"dstROI shape: {dstROI.shape}")
-    # print(f"warped shape: {warped.shape}")
+    dstROI = dst[clamped_r2[1]:clamped_r2[1]+clamped_r2[3], clamped_r2[0]:clamped_r2[0]+clamped_r2[2]]
     dstROI[:] = (dstROI * (1 - mask) + warped * mask).astype(dstROI.dtype)
 
 def warp_image_piecewise_affine(src_img, src_pts, dst_pts, triangles=None, strength=1.0):
@@ -63,8 +76,8 @@ def warp_image_piecewise_affine(src_img, src_pts, dst_pts, triangles=None, stren
                 [tri3[1,0]-tri3[0,0], tri3[1,1]-tri3[0,1]],
                 [tri3[2,0]-tri3[0,0], tri3[2,1]-tri3[0,1]],
             ]))
-        if abs(area(t_src)) < 1e-3 or abs(area(t_dst)) < 1e-3:
-            continue
+        # if abs(area(t_src)) < 1e-3 or abs(area(t_dst)) < 1e-3:
+        #     continue
 
         warp_triangle(src_img, out, t_src, t_dst)
 

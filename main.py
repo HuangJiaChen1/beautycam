@@ -5,7 +5,7 @@ def smoothstep(edge0, edge1, x):
     t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
 
-def get_source_map_elliptical(pos, center, minor, major, angle, scale_ratio, radius_factor=1.5):
+def get_source_map_elliptical(pos, center, minor, major, angle, scale_ratio, radius_factor=2):
     # pos: (h, w, 2) [x, y]
     # center: [cx, cy]
     # minor, major: full axis lengths

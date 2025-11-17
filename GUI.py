@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import filedialog
 from PIL import Image, ImageTk
 from functools import lru_cache
+import math
 
 from affine_transformation import warp_with_triangulation, warp_with_triangulation_2d
 from anti_nasolabial import nasolabial_folds_filter
@@ -60,7 +61,8 @@ SHOULIAN_INDICES = [234,93,132, 58, 172, 136, 150, 149, 176, 148,323,454, 361, 2
                     374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]
 
 POINT_OFFSET = 500
-
+SMALL_FACE_THRESHOLD = 120
+UPSAMPLE_FACTOR = 3
 # Debug flag: draw per-face ROI rectangles (easy to toggle off)
 ROI_DEBUG_DRAW = True
 
@@ -101,6 +103,27 @@ def get_points_all(landmarks, width, height):
     points = np.array([(lm.x * width, lm.y * height, lm.z + 1) for lm in landmarks])
     return [(transform_to_3d(int(p[0]), int(p[1]), p[2])) for p in points]
 
+
+def get_dynamic_upsample_factor(face_width: int, face_height: int) -> int:
+    """
+    Dynamically choose the upsample factor based on face size.
+    - < 120px  → 4×
+    - 120~179px → 3×
+    - 180~299px → 2×
+    - ≥ 300px   → 1× (no upsample)
+
+    All factors are integer → INTER_NEAREST up + INTER_AREA down = pixel-perfect roundtrip
+    """
+    size = min(face_width, face_height)  # use the smaller dimension (more conservative)
+
+    if size < 120:
+        return 4
+    elif size < 180:
+        return 3
+    elif size < 300:
+        return 2
+    else:
+        return 1
 
 def get_points_2D(landmarks, width, height):
     """Optimized 2D point extraction"""
@@ -250,7 +273,7 @@ def run_model_inference(image):
             y1 = max(y0 + 1, min(int(round(cy + 1.2*(height_pix/2.0))), h))
             final_w = max(1, x1 - x0)
             final_h = max(1, y1 - y0)
-
+            print(new_w,new_h)
             face_crop = image[y0:y0 + final_h, x0:x0 + final_w]
             # cv2.imshow('face_crop', face_crop)
             # cv2.waitKey(0)
@@ -332,43 +355,54 @@ def process_image(image, selected_faces, apply_bg_blur=False):
     processed_image = apply_whitening_and_blend(image, eye_mask, cached_segmentation_mask, hsv_image, 0,
                                                 shared_params['S'], shared_params['V'], shared_params['MOPI'])
 
-    # For each selected face, warp and filter on the crop, then paste back
     for face_idx in selected_faces:
         if face_idx >= len(cached_face_bboxes) or face_idx >= len(cached_face_landmarks_crops):
             continue
-        x, y, w, h = cached_face_bboxes[face_idx]
-        if w <= 1 or h <= 1:
+        x, y, w_crop, h_crop = cached_face_bboxes[face_idx]
+        if w_crop <= 1 or h_crop <= 1:
             continue
-        roi = processed_image[y:y+h, x:x+w].copy()
+
+        # Dynamic upsample factor
+        scale = get_dynamic_upsample_factor(w_crop, h_crop)
+        w_big = w_crop * scale
+        h_big = h_crop * scale
+
+        # Extract and upsample ROI
+        roi = processed_image[y:y + h_crop, x:x + w_crop].copy()
+        if scale > 1:
+            roi_big = cv2.resize(roi, (w_big, h_big), interpolation=cv2.INTER_NEAREST)
+        else:
+            roi_big = roi.copy()
+
+        lm_crop = cached_face_landmarks_crops[face_idx]
         p = face_params[face_idx]
 
-        # Landmarks and points in crop coordinates
-        lm_crop = cached_face_landmarks_crops[face_idx]
-        face_points3d = get_points_all(lm_crop.landmark, w, h)
+        # Scale landmarks to the big (upsampled) coordinate space
+        def lm_to_big(landmark_list):
+            return [(lm.x * w_big, lm.y * h_big) for lm in landmark_list.landmark]
 
-        # First warp: shoulian on crop
-        shoulian_src = {}
-        shoulian_dst = {}
-        for local in SHOULIAN_INDICES:
-            pt3 = face_points3d[local]
-            shoulian_src[local] = pt3
-            shoulian_dst[local] = pt3
-        local_dst = {local: shoulian_dst[local] for local in SHOULIAN_INDICES}
+        def lm3d_to_big(landmark_list):
+            return [(lm.x * w_big * (lm.z + 1), lm.y * h_big * (lm.z + 1), lm.z + 1)
+                    for lm in landmark_list.landmark]
+
+        all_2d_big = lm_to_big(lm_crop)
+        face_points3d_big = lm3d_to_big(lm_crop)
+
+        # === First warp: SHOULIAN ===
+        shoulian_src = {i: face_points3d_big[i] for i in SHOULIAN_INDICES if i < len(face_points3d_big)}
+        shoulian_dst = shoulian_src.copy()
+        local_dst = {k: v for k, v in shoulian_dst.items()}
         shoulian(p['SHOULIAN'], local_dst)
-        for local in SHOULIAN_INDICES:
-            shoulian_dst[local] = local_dst[local]
-        roi = warp_with_triangulation(roi, shoulian_src, shoulian_dst)
+        for k in local_dst:
+            shoulian_dst[k] = local_dst[k]
+        roi_big = warp_with_triangulation(roi_big, shoulian_src, shoulian_dst)
 
-        # Second warp: facial adjustments on crop
-        src_points = {}
-        dst_points = {}
-        for local in BOUNDARY:
-            pt3 = face_points3d[local]
-            src_points[local] = pt3
-            dst_points[local] = pt3
-
-        local_dst = {local: dst_points[local] for local in BOUNDARY}
+        # === Second warp: main facial adjustments ===
+        src_points = {i: face_points3d_big[i] for i in BOUNDARY if i < len(face_points3d_big)}
+        dst_points = src_points.copy()
+        local_dst = {k: v for k, v in dst_points.items()}
         quangu(p['QUANGU'] * p['ZHAILIAN'], local_dst)
+        dayan(p['DAYAN'], local_dst)
         biyi(p['BIYI'], local_dst)
         longnose(p['LONGNOSE'], local_dst)
         zhailian(p['ZHAILIAN'], local_dst)
@@ -376,31 +410,34 @@ def process_image(image, selected_faces, apply_bg_blur=False):
         forehead(p['FOREHEAD'], local_dst)
         zuijiao(p['ZUIJIAO'], local_dst)
         dazui(p['DAZUI'], local_dst)
-        for local in BOUNDARY:
-            dst_points[local] = local_dst[local]
+        for k in local_dst:
+            dst_points[k] = local_dst[k]
 
-        roi = warp_with_triangulation(roi, src_points, dst_points)
+        roi_big = warp_with_triangulation(roi_big, src_points, dst_points)
 
-        # Per-face detail and color adjustments on crop using 2D points
-        all_2d_crop = get_points_2D(lm_crop.landmark, w, h)
+        # === All 2D-based effects (use scaled 2D landmarks) ===
         if p['DETAIL'] > 0:
-            roi = enhance_face_detail(roi, all_2d_crop, strength_pct=p['DETAIL'])
+            roi_big = enhance_face_detail(roi_big, all_2d_big, strength_pct=p['DETAIL'])
         if p['FALING'] > 0:
-            roi = nasolabial_folds_filter(roi, all_2d_crop, p['FALING'])
+            roi_big = nasolabial_folds_filter(roi_big, all_2d_big, p['FALING'])
         if p['BLACK'] > 0:
-            roi = black_filter(roi, all_2d_crop, p['BLACK'])
+            roi_big = black_filter(roi_big, all_2d_big, p['BLACK'])
         if p['WHITE_EYE'] != 1:
-            roi = white_eyes(roi, all_2d_crop, p['WHITE_EYE'])
+            roi_big = white_eyes(roi_big, all_2d_big, p['WHITE_EYE'])
         if p['WHITE_TEETH'] != 1:
-            roi = white_teeth(roi, all_2d_crop, p['WHITE_TEETH'])
+            roi_big = white_teeth(roi_big, all_2d_big, p['WHITE_TEETH'])
         if p['LIPSTICK'] > 0:
-            roi = apply_lipstick(roi, all_2d_crop, p['LIPSTICK'])
+            roi_big = apply_lipstick(roi_big, all_2d_big, p['LIPSTICK'])
         if p['BLUSH'] > 0:
-            roi = apply_blush(roi, all_2d_crop, color=(157, 107, 255), intensity=p['BLUSH'])
-        roi = apply_big_eye_effect(roi, p['DAYAN'], all_2d_crop)
+            roi_big = apply_blush(roi_big, all_2d_big, color=(157, 107, 255), intensity=p['BLUSH'])
+        # roi_big = apply_big_eye_effect(roi_big, p['DAYAN'], all_2d_big)
 
-        # Paste back
-        processed_image[y:y+h, x:x+w] = roi
+        if scale > 1:
+            roi_final = cv2.resize(roi_big, (w_crop, h_crop), interpolation=cv2.INTER_AREA)
+        else:
+            roi_final = roi_big
+
+        processed_image[y:y + h_crop, x:x + w_crop] = roi_final
 
     if apply_bg_blur:
         processed_image = bg_blur(processed_image)
