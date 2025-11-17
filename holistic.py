@@ -7,7 +7,7 @@ mp_drawing_styles = mp.solutions.drawing_styles
 mp_holistic = mp.solutions.holistic
 
 # For static images:
-IMAGE_FILES = ['imgs/face3.jpg']
+IMAGE_FILES = ['imgs/2face.jpg']
 BG_COLOR = (192, 192, 192) # gray
 with mp_holistic.Holistic(
     static_image_mode=True,

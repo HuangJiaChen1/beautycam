@@ -31,6 +31,7 @@ from zuijiao import zuijiao
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_selfie_segmentation = mp.solutions.selfie_segmentation
+mp_face_detection = mp.solutions.face_detection
 #TODO: MASK NEEDS TO TRANSFORM AS WELL
 
 # Constants
@@ -72,7 +73,10 @@ defaults = {
 
 all_params = list(defaults.keys())
 
-cached_face_landmarks = None
+# Store per-face landmarks as a list
+cached_face_landmarks = []
+cached_faces = []
+cached_face_bboxes = []  # (x, y, w, h) for each cached face crop
 cached_segmentation_mask = None
 cached_image_shape = None
 cached_face_hulls = None
@@ -157,33 +161,137 @@ def on_click(event):
         schedule_update()
 
 
+class _SimpleLandmark:
+    def __init__(self, x: float, y: float, z: float):
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+class _SimpleLandmarkList:
+    def __init__(self, landmarks):
+        self.landmark = landmarks
+
+
+def _to_full_image_landmarks(face_lm_list, bbox, img_w, img_h):
+    """Map landmarks from a face crop to normalized full-image coordinates.
+    bbox: (xmin, ymin, width, height) in absolute pixel units.
+    Returns _SimpleLandmarkList with .landmark list containing x,y normalized to full image.
+    """
+    xmin, ymin, bw, bh = bbox
+    landmarks = []
+    for lm in face_lm_list.landmark:
+        # lm.x, lm.y are normalized to the crop size; map to absolute then normalize by full image size
+        abs_x = xmin + (lm.x * bw)
+        abs_y = ymin + (lm.y * bh)
+        x_norm = abs_x / float(img_w) if img_w else 0.0
+        y_norm = abs_y / float(img_h) if img_h else 0.0
+        landmarks.append(_SimpleLandmark(x_norm, y_norm, lm.z))
+    return _SimpleLandmarkList(landmarks)
+
+
 def run_model_inference(image):
-    """Run face mesh inference once"""
-    global cached_face_landmarks, cached_segmentation_mask, cached_image_shape, cached_face_hulls
+    """Run face detection, then FaceMesh per detected face using cached_faces, caching per-face landmarks."""
+    global cached_face_landmarks, cached_segmentation_mask, cached_image_shape, cached_face_hulls, cached_faces, cached_face_bboxes
 
     if image is None:
         return None, None
 
+    # Reset caches for a fresh inference
+    cached_faces.clear()
+    cached_face_landmarks = []
+    cached_face_hulls = []
+
     cached_image_shape = image.shape
     h, w = image.shape[:2]
 
-    # Face mesh inference
+    # Face detection (to populate cached_faces)
+    with mp_face_detection.FaceDetection(
+            model_selection=1, min_detection_confidence=0.5) as face_detection:
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        faces = face_detection.process(image_rgb)
+
+    face_bboxes = []
+    if faces and faces.detections:
+        for detection in faces.detections:
+            xmin = detection.location_data.relative_bounding_box.xmin
+            ymin = detection.location_data.relative_bounding_box.ymin
+            height = detection.location_data.relative_bounding_box.height
+            width = detection.location_data.relative_bounding_box.width
+
+            xmin_pix = int(xmin * w)
+            ymin_pix = int(ymin * h)
+            width_pix = int(width * w)
+            height_pix = int(height * h)
+
+            # Enlarge bbox around center by FACE_CROP_SCALE and clamp
+            cx = xmin_pix + width_pix / 2.0
+            cy = ymin_pix + height_pix / 2.0
+            new_w = int(round(width_pix * 1.2))
+            new_h = int(round(height_pix * 2))
+            new_xmin = int(round(cx - new_w / 2.0))
+            new_ymin = int(round(cy - new_h / 2.0))
+
+            x0 = max(0, min(new_xmin, w - 1))
+            y0 = max(0, min(new_ymin, h - 1))
+            x1 = max(x0 + 1, min(new_xmin + new_w, w))
+            # The lower part of the face does not need such big crop, 1.2 factor for lower part
+            y1 = max(y0 + 1, min(int(round(cy + 1.2*(height_pix/2.0))), h))
+            final_w = max(1, x1 - x0)
+            final_h = max(1, y1 - y0)
+
+            face_crop = image[y0:y0 + final_h, x0:x0 + final_w]
+            # cv2.imshow('face_crop', face_crop)
+            # cv2.waitKey(0)
+            cached_faces.append(face_crop)
+            face_bboxes.append((x0, y0, final_w, final_h))
+
+    # Face mesh inference per detected face; fallback to whole image if no faces found
     with mp_face_mesh.FaceMesh(
             static_image_mode=True,
-            max_num_faces=5,
+            max_num_faces=1,
             refine_landmarks=True,
             min_detection_confidence=0.5) as face_mesh:
+        '''
+        What about not expand to full image landmark
+        '''
+        if cached_faces:
+            for crop, bbox in zip(cached_faces, face_bboxes):
+                if crop is None or crop.size == 0:
+                    continue
+                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                crop_results = face_mesh.process(crop_rgb)
+                if crop_results.multi_face_landmarks:
+                    # In typical cases, one face per crop; iterate defensively
+                    for lm_list in crop_results.multi_face_landmarks:
+                        mapped = _to_full_image_landmarks(lm_list, bbox, w, h)
+                        cached_face_landmarks.append(mapped)
+        else:
+            # Fallback: run mesh on the full image
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            face_results = face_mesh.process(image_rgb)
+            if face_results.multi_face_landmarks:
+                for lm_list in face_results.multi_face_landmarks:
+                    # Already normalized to full image dimensions
+                    landmarks = [_SimpleLandmark(lm.x, lm.y, lm.z) for lm in lm_list.landmark]
+                    cached_face_landmarks.append(_SimpleLandmarkList(landmarks))
 
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        face_results = face_mesh.process(image_rgb)
-        cached_face_landmarks = face_results.multi_face_landmarks if face_results.multi_face_landmarks else []
+    # Save bboxes for ROI usage in warping
+    cached_face_bboxes = face_bboxes
 
-    # Pre-compute convex hulls
+    # Pre-compute convex hulls for selection hit-testing and masks
     if cached_face_landmarks:
         cached_face_hulls = compute_face_hulls(cached_face_landmarks, w, h)
     else:
         cached_face_hulls = []
-    all_masks = get_exposed_skin_mask(image_rgb)
+
+    # Skin segmentation mask for background blur
+    # Use latest RGB computed above if available; otherwise compute from image
+    try:
+        rgb_for_seg = image_rgb  # from detection or fallback branch
+    except NameError:
+        rgb_for_seg = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    all_masks = get_exposed_skin_mask(rgb_for_seg)
     cached_segmentation_mask = all_masks
     return cached_face_landmarks, cached_segmentation_mask
 
@@ -245,21 +353,11 @@ def process_image(image, selected_faces, apply_bg_blur=False):
 
     # Compute per-face ROI from enlarged face hulls (based on hull area)
     face_rois = {}
-    if cached_face_hulls is not None:
+    # Use cached cropped face bounding boxes directly as ROI
+    if cached_face_bboxes:
         for face_idx in selected_faces:
-            if face_idx < len(cached_face_hulls) and cached_face_hulls[face_idx] is not None:
-                hull = cached_face_hulls[face_idx]
-                area = max(cv2.contourArea(hull), 1.0)
-                x, y, w, h = cv2.boundingRect(hull)
-                # padding in pixels based on face hull area
-                pad = int(max(8, 0.10 * np.sqrt(area)))
-                rx = max(0, int(x - 2*pad))
-                ry = max(0, y - 10*pad)
-                rx2 = min(w_img - 1, int(x + w + 2*pad))
-                ry2 = min(h_img - 1, y + h + pad)
-                rw = rx2 - rx + 1
-                rh = ry2 - ry + 1
-                # ensure valid ROI
+            if 0 <= face_idx < len(cached_face_bboxes):
+                rx, ry, rw, rh = cached_face_bboxes[face_idx]
                 if rw > 2 and rh > 2:
                     face_rois[face_idx] = (rx, ry, rw, rh)
 
