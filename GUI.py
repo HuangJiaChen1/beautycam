@@ -82,6 +82,7 @@ cached_face_landmarks_crops = []
 cached_faces = []
 cached_face_bboxes = []  # (x, y, w, h) for each cached face crop
 cached_segmentation_mask = None
+cached_seg_mask_per_face = []
 cached_image_shape = None
 cached_face_hulls = None
 cached_eye_lips = None
@@ -225,7 +226,8 @@ def _clone_normalized_landmarks(face_lm_list):
 
 def run_model_inference(image):
     """Run face detection, then FaceMesh per detected face using cached_faces, caching per-face landmarks."""
-    global cached_face_landmarks, cached_face_landmarks_crops, cached_segmentation_mask, cached_image_shape, cached_face_hulls, cached_faces, cached_face_bboxes
+    global cached_face_landmarks, cached_face_landmarks_crops, cached_segmentation_mask, cached_image_shape,\
+        cached_face_hulls, cached_faces, cached_face_bboxes, cached_seg_mask_per_face
 
     if image is None:
         return None, None
@@ -235,14 +237,24 @@ def run_model_inference(image):
     cached_face_landmarks = []
     cached_face_landmarks_crops = []
     cached_face_hulls = []
+    cached_seg_mask_per_face = []
 
     cached_image_shape = image.shape
     h, w = image.shape[:2]
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    # Skin segmentation mask for background blur
+    # Use latest RGB computed above if available; otherwise compute from image
+    try:
+        rgb_for_seg = image_rgb  # from detection or fallback branch
+    except NameError:
+        rgb_for_seg = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    all_masks = get_exposed_skin_mask(rgb_for_seg)
+    cached_segmentation_mask = all_masks
 
     # Face detection (to populate cached_faces)
     with mp_face_detection.FaceDetection(
             model_selection=1, min_detection_confidence=0.5) as face_detection:
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         faces = face_detection.process(image_rgb)
 
     face_bboxes = []
@@ -275,6 +287,10 @@ def run_model_inference(image):
             final_h = max(1, y1 - y0)
             print(new_w,new_h)
             face_crop = image[y0:y0 + final_h, x0:x0 + final_w]
+            seg_face = cached_segmentation_mask[y0:y0 + final_h, x0:x0 + final_w]
+            # cv2.imshow('seg_face', seg_face)
+            # cv2.waitKey(0)
+            cached_seg_mask_per_face.append(seg_face)
             # cv2.imshow('face_crop', face_crop)
             # cv2.waitKey(0)
             cached_faces.append(face_crop)
@@ -324,20 +340,14 @@ def run_model_inference(image):
     else:
         cached_face_hulls = []
 
-    # Skin segmentation mask for background blur
-    # Use latest RGB computed above if available; otherwise compute from image
-    try:
-        rgb_for_seg = image_rgb  # from detection or fallback branch
-    except NameError:
-        rgb_for_seg = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    all_masks = get_exposed_skin_mask(rgb_for_seg)
-    cached_segmentation_mask = all_masks
+
     return cached_face_landmarks, cached_segmentation_mask
 
 
 def process_image(image, selected_faces, apply_bg_blur=False):
     """Process image by applying warping per cropped face and compositing back."""
-    global cached_face_landmarks, cached_face_landmarks_crops, cached_face_bboxes, face_params
+    global cached_face_landmarks, cached_face_landmarks_crops, cached_face_bboxes,\
+        face_params,cached_seg_mask_per_face
 
     if image is None or not cached_face_landmarks or not selected_faces:
         return bg_blur(image) if apply_bg_blur else image
@@ -369,10 +379,13 @@ def process_image(image, selected_faces, apply_bg_blur=False):
 
         # Extract and upsample ROI
         roi = processed_image[y:y + h_crop, x:x + w_crop].copy()
+        seg_roi = cached_seg_mask_per_face[face_idx].copy()
         if scale > 1:
             roi_big = cv2.resize(roi, (w_big, h_big), interpolation=cv2.INTER_NEAREST)
+            seg_roi_big = cv2.resize(seg_roi, (w_big, h_big), interpolation=cv2.INTER_NEAREST)
         else:
             roi_big = roi.copy()
+            seg_roi_big = seg_roi.copy()
 
         lm_crop = cached_face_landmarks_crops[face_idx]
         p = face_params[face_idx]
@@ -429,7 +442,7 @@ def process_image(image, selected_faces, apply_bg_blur=False):
         if p['LIPSTICK'] > 0:
             roi_big = apply_lipstick(roi_big, all_2d_big, p['LIPSTICK'])
         if p['BLUSH'] > 0:
-            roi_big = apply_blush(roi_big, all_2d_big, color=(157, 107, 255), intensity=p['BLUSH'])
+            roi_big = apply_blush(roi_big, all_2d_big, seg_roi_big , color=(157, 107, 255), intensity=p['BLUSH'])
         # roi_big = apply_big_eye_effect(roi_big, p['DAYAN'], all_2d_big)
 
         if scale > 1:

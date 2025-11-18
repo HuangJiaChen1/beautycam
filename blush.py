@@ -82,7 +82,7 @@ def create_region_mask(landmarks, indices, h, w):
     cv2.fillConvexPoly(mask, hull, 255)
     return mask.astype(np.float32) / 255.0
 
-def apply_blush(image,landmarks, color=(157, 107, 255), intensity=0.6):
+def apply_blush(image,landmarks, face_mask, color=(157, 107, 255), intensity=0.6):
     output_image = image.copy()
 
     h, w = output_image.shape[:2]
@@ -97,25 +97,16 @@ def apply_blush(image,landmarks, color=(157, 107, 255), intensity=0.6):
         output_image, landmarks, left_cheek_indices, color, intensity
     )
 
-    all_points = landmarks
-    if len(all_points) >= 3:
-        all_points = np.array(all_points, dtype=np.int32)
-        face_mask_temp = np.zeros((h, w), dtype=np.uint8)
-        hull = cv2.convexHull(all_points)
-        cv2.fillConvexPoly(face_mask_temp, hull, 255)
-        face_mask = face_mask_temp.astype(np.float32) / 255.0
-    else:
-        face_mask = np.ones((h, w), dtype=np.float32)
-
     eye_mask = create_region_mask(landmarks, eye_indices, h, w)
     nose_mask = create_region_mask(landmarks, nose_indices, h, w)
     mouth_mask = create_region_mask(landmarks, mouth_indices, h, w)
 
+    face_mask = face_mask / 255.0
     forbidden_mask = np.maximum(1 - face_mask, np.maximum(eye_mask, np.maximum(nose_mask, mouth_mask)))
 
     forbidden_3ch = cv2.merge([forbidden_mask, forbidden_mask, forbidden_mask])
-    cv2.imshow('forbidden', forbidden_3ch)
-    cv2.waitKey(0)
+    # cv2.imshow('forbidden', forbidden_3ch)
+    # cv2.waitKey(0)
     output_float = output_image.astype(np.float32)
     original_float = image.astype(np.float32)
     output_image = output_float * (1 - forbidden_3ch) + original_float * forbidden_3ch
