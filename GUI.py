@@ -84,7 +84,7 @@ cached_face_bboxes = []  # (x, y, w, h) for each cached face crop
 cached_segmentation_mask = None
 cached_seg_mask_per_face = []
 cached_image_shape = None
-cached_face_hulls = None
+cached_face_hulls = []
 cached_eye_lips = None
 selected_faces = set()
 face_params = {}
@@ -400,6 +400,22 @@ def process_image(image, selected_faces, apply_bg_blur=False):
 
         all_2d_big = lm_to_big(lm_crop)
         face_points3d_big = lm3d_to_big(lm_crop)
+        # === All 2D-based effects (use scaled 2D landmarks) ===
+        if p['DETAIL'] > 0:
+            roi_big = enhance_face_detail(roi_big, all_2d_big, strength_pct=p['DETAIL'])
+        if p['FALING'] > 0:
+            roi_big = nasolabial_folds_filter(roi_big, all_2d_big, p['FALING'])
+        if p['BLACK'] > 0:
+            roi_big = black_filter(roi_big, all_2d_big, p['BLACK'])
+        if p['WHITE_EYE'] != 1:
+            roi_big = white_eyes(roi_big, all_2d_big, p['WHITE_EYE'])
+        if p['WHITE_TEETH'] != 1:
+            roi_big = white_teeth(roi_big, all_2d_big, p['WHITE_TEETH'])
+        if p['LIPSTICK'] > 0:
+            roi_big = apply_lipstick(roi_big, all_2d_big, p['LIPSTICK'])
+        if p['BLUSH'] > 0:
+            roi_big = apply_blush(roi_big, all_2d_big, seg_roi_big , color=(157, 107, 255), intensity=p['BLUSH'])
+        # roi_big = apply_big_eye_effect(roi_big, p['DAYAN'], all_2d_big)
 
         # === First warp: SHOULIAN ===
         shoulian_src = {i: face_points3d_big[i] for i in SHOULIAN_INDICES if i < len(face_points3d_big)}
@@ -428,22 +444,6 @@ def process_image(image, selected_faces, apply_bg_blur=False):
 
         roi_big = warp_with_triangulation(roi_big, src_points, dst_points)
 
-        # === All 2D-based effects (use scaled 2D landmarks) ===
-        if p['DETAIL'] > 0:
-            roi_big = enhance_face_detail(roi_big, all_2d_big, strength_pct=p['DETAIL'])
-        if p['FALING'] > 0:
-            roi_big = nasolabial_folds_filter(roi_big, all_2d_big, p['FALING'])
-        if p['BLACK'] > 0:
-            roi_big = black_filter(roi_big, all_2d_big, p['BLACK'])
-        if p['WHITE_EYE'] != 1:
-            roi_big = white_eyes(roi_big, all_2d_big, p['WHITE_EYE'])
-        if p['WHITE_TEETH'] != 1:
-            roi_big = white_teeth(roi_big, all_2d_big, p['WHITE_TEETH'])
-        if p['LIPSTICK'] > 0:
-            roi_big = apply_lipstick(roi_big, all_2d_big, p['LIPSTICK'])
-        if p['BLUSH'] > 0:
-            roi_big = apply_blush(roi_big, all_2d_big, seg_roi_big , color=(157, 107, 255), intensity=p['BLUSH'])
-        # roi_big = apply_big_eye_effect(roi_big, p['DAYAN'], all_2d_big)
 
         if scale > 1:
             roi_final = cv2.resize(roi_big, (w_crop, h_crop), interpolation=cv2.INTER_AREA)
