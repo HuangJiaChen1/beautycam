@@ -36,15 +36,14 @@ def black_filter(image, landmarks, strength=1.0):
     y2 = min(y + rh + border, h)
 
     crop_orig = image[y1:y2, x1:x2]
-    crop_h, crop_w = crop_orig.shape[:2]
     d = int(32 * strength)
     sigma_color = 128 * strength
     sigma_space = 16 * strength
 
-    crop_blurred = cv2.bilateralFilter(
-        crop_orig, d=d, sigmaColor=sigma_color, sigmaSpace=sigma_space
+    blurred = cv2.bilateralFilter(
+        image, d=d, sigmaColor=sigma_color, sigmaSpace=sigma_space
     )
-
+    crop_blurred = blurred[y1:y2, x1:x2]
     crop_alpha = alpha[y1:y2, x1:x2]  # (crop_h, crop_w, 1)
 
     orig_f = crop_orig.astype(np.float32)
